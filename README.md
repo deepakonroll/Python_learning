@@ -75,6 +75,7 @@ pytest
 - `pytest` in depth, `typing` deep dive (`Generic`, `TypeVar`, `TypedDict`)
 - packaging & publishing (`pyproject.toml`, PyPI)
 - web/API frameworks (FastAPI), data stack (pandas, numpy)
+- See **ROADMAP.md** for the guided path into data science & LLMs
 
 Read the official tutorial next: <https://docs.python.org/3/tutorial/> —
 it is genuinely good, and short.
