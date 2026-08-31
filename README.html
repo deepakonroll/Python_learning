@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Python for Java Developers — a 13-lesson guided tour</title>
+<style>
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #24292f; background: #ffffff; line-height: 1.6;
+    max-width: 960px; margin: 0 auto; padding: 24px 32px 64px;
+  }
+  h1, h2 { border-bottom: 1px solid #d8dee4; padding-bottom: 6px; }
+  h1 { font-size: 1.9em; } h2 { font-size: 1.35em; margin-top: 1.6em; }
+  code, pre {
+    font-family: Consolas, Menlo, "Cascadia Code", monospace;
+    font-size: 0.9em; background: #f6f8fa; border-radius: 5px;
+  }
+  code { padding: 2px 5px; }
+  pre { padding: 14px 16px; overflow-x: auto; line-height: 1.5; }
+  pre code { padding: 0; background: none; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.95em; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f6f8fa; }
+  blockquote {
+    border-left: 4px solid #d0d7de; color: #57606a;
+    margin: 12px 0; padding: 2px 16px;
+  }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<h1>Python for Java Developers — a 13-lesson guided tour</h1>
+
+<p>Every lesson is a <strong>standalone runnable file</strong>: run it, read its output,
+then read the source top-to-bottom. Java equivalents are called out in the
+docstring at the top of every file and in <code># Java:</code>-style comments inline.</p>
+
+<p><em>Tested on Python 3.11 (needs <strong>3.10+</strong> for the <code>match</code> lesson).</em></p>
+
+<h2>How to run (PowerShell)</h2>
+
+<pre><code class="language-powershell"># from this folder (it is the project root):
+python 01_basics_and_running.py       # one lesson at a time, or run all:
+Get-ChildItem *.py | Sort-Object Name | ForEach-Object { python $_.FullName }</code></pre>
+
+<blockquote>
+<p>The filenames start with digits on purpose: it keeps the reading order
+obvious and makes them non-importable as modules — each lesson is meant
+to be read and run standalone.</p>
+</blockquote>
+
+<h2>Lessons</h2>
+
+<table>
+  <thead>
+    <tr><th>File</th><th>Topic</th><th>Closest Java thing</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>01_basics_and_running.py</code></td><td>dynamic typing, core types, <code>__main__</code> guard, truthiness</td><td>static typing, <code>main()</code>, <code>null</code>, <code>equals()</code> vs <code>==</code></td></tr>
+    <tr><td><code>02_strings_and_formatting.py</code></td><td>f-strings, slicing, string methods</td><td><code>String.format</code>, <code>substring</code>, immutability</td></tr>
+    <tr><td><code>03_collections.py</code></td><td>list / tuple / dict / set, comprehensions</td><td><code>ArrayList</code>, records, <code>HashMap</code>, <code>HashSet</code>, Streams</td></tr>
+    <tr><td><code>04_control_flow.py</code></td><td>if/elif, for-in, range, enumerate, zip, <code>match</code>, walrus</td><td>switch expressions, enhanced for, labeled break</td></tr>
+    <tr><td><code>05_functions.py</code></td><td>defaults, kwargs, <code>*args/**kwargs</code>, lambdas, closures</td><td>overloading, varargs, <code>Function&lt;T,R&gt;</code>, anonymous classes</td></tr>
+    <tr><td><code>06_oop_basics.py</code></td><td>classes, <code>__init__</code>, inheritance, dunder methods, operator overloading</td><td>constructors, <code>extends</code>, <code>toString</code>/<code>equals</code></td></tr>
+    <tr><td><code>07_dataclasses_enums_properties.py</code></td><td><code>@dataclass</code>, <code>Enum</code>, <code>@property</code>, <code>@classmethod</code></td><td>records, enums, JavaBeans, static factories</td></tr>
+    <tr><td><code>08_duck_typing_and_interfaces.py</code></td><td>duck typing, <code>abc.ABC</code>, <code>Protocol</code>, MRO</td><td>interfaces, abstract classes, multiple inheritance</td></tr>
+    <tr><td><code>09_exceptions.py</code></td><td>try/except/else/finally, custom exceptions, EAFP</td><td>try/catch/finally — but <strong>no checked exceptions</strong></td></tr>
+    <tr><td><code>10_iterators_and_generators.py</code></td><td>iterator protocol, <code>yield</code>, generator expressions, itertools</td><td><code>Iterator</code>, lazy Streams, <code>flatMap</code></td></tr>
+    <tr><td><code>11_decorators.py</code></td><td>decorators with and without arguments, <code>@cache</code></td><td>annotations that actually run (AOP / Decorator pattern)</td></tr>
+    <tr><td><code>12_context_managers_and_files.py</code></td><td><code>with</code>, files, <code>pathlib</code>, JSON</td><td>try-with-resources, <code>java.nio.file</code>, Jackson</td></tr>
+    <tr><td><code>13_modules_and_stdlib.py</code></td><td>imports, packages, stdlib tour, logging, pip/venv</td><td>packages, classpath, SLF4J, Maven/Gradle</td></tr>
+  </tbody>
+</table>
+
+<h2>The five differences that matter most</h2>
+
+<ol>
+  <li><strong>Dynamic typing</strong> — names have no type; objects do. Type hints are
+      optional and checked by tools (mypy, IDEs), not enforced at runtime.</li>
+  <li><strong>Indentation is syntax</strong> — no braces, ever. 4 spaces, PEP 8 style.</li>
+  <li><strong>No checked exceptions</strong> — nothing forces callers to catch; failures
+      are handled with the EAFP idiom ("easier to ask forgiveness...").</li>
+  <li><strong>Everything is an object</strong> — even <code>int</code>; even classes and functions,
+      which is what makes decorators and lambdas trivial.</li>
+  <li><strong>Operator overloading &amp; "magic" methods</strong> — <code>__add__</code>, <code>__len__</code>,
+      <code>__getitem__</code>, ... replace lots of Java boilerplate interfaces.</li>
+</ol>
+
+<h2>Tooling map</h2>
+
+<table>
+  <thead>
+    <tr><th>Java world</th><th>Python world</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Maven/Gradle, pom.xml</td><td><code>pip</code>, <code>requirements.txt</code>, <code>pyproject.toml</code></td></tr>
+    <tr><td>Checkstyle/SpotBugs</td><td><code>ruff</code> (lint), <code>black</code> (format)</td></tr>
+    <tr><td>JUnit</td><td><code>pytest</code></td></tr>
+    <tr><td>javadoc</td><td>docstrings + <code>help(obj)</code></td></tr>
+    <tr><td>IntelliJ IDEA</td><td>PyCharm / VS Code + Pylance</td></tr>
+  </tbody>
+</table>
+
+<p>Quickstart for a real project:</p>
+
+<pre><code class="language-powershell">python -m venv .venv                  # per-project isolated deps
+.\.venv\Scripts\Activate.ps1
+pip install ruff pytest
+ruff check .
+pytest</code></pre>
+
+<h2>Deliberately not covered (your next steps)</h2>
+
+<ul>
+  <li><code>asyncio</code> (async/await) — the CompletableFuture / virtual-threads analog</li>
+  <li>threads &amp; multiprocessing (ask about the GIL)</li>
+  <li><code>pytest</code> in depth, <code>typing</code> deep dive (<code>Generic</code>, <code>TypeVar</code>, <code>TypedDict</code>)</li>
+  <li>packaging &amp; publishing (<code>pyproject.toml</code>, PyPI)</li>
+  <li>web/API frameworks (FastAPI), data stack (pandas, numpy)</li>
+</ul>
+
+<p>Read the official tutorial next:
+<a href="https://docs.python.org/3/tutorial/">docs.python.org/3/tutorial</a> —
+it is genuinely good, and short.</p>
+
+</body>
+</html>
