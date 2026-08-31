@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roadmap: Python for Data Science &amp; LLMs</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #24292f; --muted: #57606a; --border: #d0d7de;
+    --code-bg: #f6f8fa; --accent: #0969da;
+  }
+  body.dark {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #30363d;
+    --code-bg: #161b22; --accent: #58a6ff;
+    color-scheme: dark;
+  }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--fg); background: var(--bg); line-height: 1.6;
+    max-width: 960px; margin: 0 auto; padding: 24px 32px 64px;
+    color-scheme: light;
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+  #theme-toggle {
+    position: fixed; top: 16px; right: 16px; z-index: 10;
+    padding: 7px 14px; border-radius: 20px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--code-bg); color: var(--fg);
+    font: inherit; font-size: 0.85em;
+  }
+  #theme-toggle:hover { border-color: var(--accent); }
+  h1, h2 { border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h1 { font-size: 1.9em; } h2 { font-size: 1.35em; margin-top: 1.6em; }
+  code, pre {
+    font-family: Consolas, Menlo, "Cascadia Code", monospace;
+    font-size: 0.9em; background: var(--code-bg); border-radius: 5px;
+  }
+  code { padding: 2px 5px; }
+  pre { padding: 14px 16px; overflow-x: auto; line-height: 1.5; }
+  pre code { padding: 0; background: none; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.95em; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--code-bg); }
+  blockquote {
+    border-left: 4px solid var(--border); color: var(--muted);
+    margin: 12px 0; padding: 2px 16px;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<button id="theme-toggle" type="button" aria-label="Toggle dark/light mode">🌙 Dark</button>
+
+<script>
+  /* Apply the saved theme (or OS preference) BEFORE first paint - no flash. */
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem("theme"); } catch (e) { /* storage may be blocked */ }
+    if (saved === "dark" ||
+        (!saved && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches)) {
+      document.body.classList.add("dark");
+    }
+  })();
+</script>
+
+<h1>Roadmap: Python for Data Science &amp; LLMs</h1>
+
+<p>A continuation of the 13-lesson tour, aimed at a Java tech lead going into
+data science and LLM application development. Every concept keeps the same
+promise as the lessons: <strong>here is the Java thing you already know</strong>.</p>
+
+<h2>Phase 0 — Environment status (you're nearly done)</h2>
+
+<p>Already installed in your Python 3.11 (verified):</p>
+<p>✅ numpy, pandas, scikit-learn, <strong>PyTorch</strong>, <strong>transformers</strong>,
+openai SDK, requests/httpx</p>
+
+<p>Still missing (install when you reach the relevant phase):</p>
+
+<pre><code class="language-powershell">pip install matplotlib jupyterlab python-dotenv   # phases 3, 5, 6
+pip install seaborn chromadb                      # optional: nicer plots, vector store
+pip install anthropic                             # optional: 2nd LLM provider</code></pre>
+
+<p>Note: this stack lives in your global interpreter. It works, but when a
+project's dependencies conflict, give it its own venv
+(<code>python -m venv .venv</code>) — same isolation idea as separate Maven projects.</p>
+
+<h2>The big libraries, mapped to Java</h2>
+
+<table>
+  <thead>
+    <tr><th>Library</th><th>What it is</th><th>Closest Java thing</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>NumPy</strong></td><td>N-dimensional arrays + vectorized math</td><td>ND4J/EJML — but ubiquitous here</td></tr>
+    <tr><td><strong>pandas</strong></td><td>DataFrames: in-memory tables</td><td><code>List&lt;Row&gt;</code> + Streams + SQL GROUP BY</td></tr>
+    <tr><td><strong>matplotlib / seaborn</strong></td><td>Plotting</td><td>JFreeChart</td></tr>
+    <tr><td><strong>Jupyter</strong></td><td>Notebook IDE: code + output + prose in cells</td><td>IntelliJ + a REPL + markdown</td></tr>
+    <tr><td><strong>scikit-learn</strong></td><td>Classical ML with one uniform API</td><td>Weka, but with a clean <code>fit</code>/<code>predict</code> interface</td></tr>
+    <tr><td><strong>PyTorch</strong></td><td>Deep learning framework</td><td>DL4J; tensors = numpy + autograd + GPU</td></tr>
+    <tr><td><strong>transformers</strong></td><td>Pretrained models (LLMs, BERT, ...) one pip away</td><td>DJL model zoo</td></tr>
+    <tr><td><strong>openai / anthropic SDK</strong></td><td>Hosted LLM REST APIs</td><td>any REST client + JSON</td></tr>
+    <tr><td><strong>LangChain / LlamaIndex</strong></td><td>LLM app orchestration (RAG, agents)</td><td>LangChain4j (same ideas)</td></tr>
+    <tr><td><strong>FastAPI</strong></td><td>Serve models as REST APIs</td><td>Spring Boot (you'll feel at home)</td></tr>
+    <tr><td><strong>pydantic</strong></td><td>Typed models + validation</td><td>Bean Validation + Jackson records</td></tr>
+    <tr><td><strong>polars</strong></td><td>Faster, modern DataFrame engine</td><td>the "Jackson of DataFrames" — know it exists</td></tr>
+    <tr><td><strong>uv / poetry</strong></td><td>Dependency management &amp; lockfiles</td><td>Maven / Gradle</td></tr>
+  </tbody>
+</table>
+
+<h2>Phase 1 — NumPy (1 weekend)</h2>
+
+<p>Core ideas: <code>ndarray</code> (shape, dtype), <strong>vectorization</strong> (no Python
+loops!), broadcasting, boolean masks, fancy indexing, aggregations,
+<code>np.random</code>.</p>
+
+<p>Java mindset shift: <code>total = np.sum(sales * price)</code> — one expression over
+whole arrays, executed in C. Think batch/SIMD, not <code>for</code> loops.
+<code>a[a &gt; 0]</code> is a filter without a loop; <code>a[:, 1]</code> is a column slice.</p>
+
+<p>Do: the official NumPy "quickstart" + "absolute basics", then the
+<strong>100 NumPy exercises</strong> repo (github.com/rougier/numpy-100).</p>
+
+<p>Mini-project: linear regression via the normal equation on synthetic data —
+zero explicit loops.</p>
+
+<h2>Phase 2 — pandas (1 week)</h2>
+
+<p>Core ideas: <code>Series</code>/<code>DataFrame</code>, <code>read_csv</code>/<code>read_json</code>,
+<code>loc</code>/<code>iloc</code>, boolean filtering, <code>groupby().agg()</code>, <code>merge()</code>
+(SQL joins), <code>pivot</code>/<code>melt</code>, handling missing values, dtypes,
+<code>apply()</code> vs vectorized ops.</p>
+
+<p>Java/SQL mappings you'll lean on:</p>
+
+<table>
+  <thead>
+    <tr><th>pandas</th><th>you already know it as</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>df.groupby("dept")["salary"].mean()</code></td><td>SQL <code>GROUP BY</code> / <code>Collectors.groupingBy</code></td></tr>
+    <tr><td><code>df.merge(other, on="id")</code></td><td>SQL <code>JOIN</code></td></tr>
+    <tr><td><code>df[df.age &gt; 30]</code></td><td>stream <code>filter</code> + <code>toList</code></td></tr>
+    <tr><td><code>df.sort_values("x", ascending=False).head(5)</code></td><td><code>sorted.comparing.reversed.limit</code></td></tr>
+    <tr><td><code>df.iloc[3, 2]</code></td><td><code>list.get(3).get(2)</code> by position</td></tr>
+    <tr><td><code>df.loc[row, "col"]</code></td><td>map lookup by label</td></tr>
+  </tbody>
+</table>
+
+<p>Do: official "10 minutes to pandas", then Kaggle Learn's free
+<strong>Pandas</strong> course (hands-on, in-browser).</p>
+
+<p>Mini-project: take a real CSV (NYC taxi sample, IMDB, or your own data),
+clean it, group/pivot it, export a summary.</p>
+
+
+<h2>Phase 3 — Visualization (2–3 days)</h2>
+
+<p><code>pip install matplotlib</code>, then learn just the core: <code>figure</code>/<code>axes</code>,
+<code>plot</code>, <code>scatter</code>, <code>hist</code>, <code>bar</code>, <code>subplots</code>, labels/titles.
+Then <strong>seaborn</strong> for statistical plots in one line
+(<code>sns.boxplot(df, x="dept", y="salary")</code>).</p>
+
+<p>Java: JFreeChart works, but matplotlib is the lingua franca — every
+tutorial assumes it. Rule of thumb: matplotlib for control, seaborn for speed.</p>
+
+<p>Mini-project: 4 charts (trend, distribution, correlation, category) from
+your Phase-2 dataset, saved as PNGs (<code>fig.savefig</code>).</p>
+
+<h2>Phase 4 — Classical ML with scikit-learn (1 week)</h2>
+
+<p>The genius of sklearn is <strong>one interface for every model</strong>:</p>
+
+<pre><code class="language-python">model = RandomForestClassifier(n_estimators=200)
+model.fit(X_train, y_train)        # every estimator has fit()
+model.predict(X_test)              # ...and predict()</code></pre>
+
+<p>Learn in this order: <code>train_test_split</code> → metrics (<code>accuracy</code>,
+<code>precision</code>, <code>recall</code>, <code>RMSE</code>) → <code>Pipeline</code> +
+<code>ColumnTransformer</code> (preprocessing chained into the model — like a build
+pipeline for data) → <code>cross_val_score</code> → one-hot encoding →
+LinearRegression, LogisticRegression, RandomForest, GradientBoosting.</p>
+
+<p>Do: sklearn "Getting Started" + relevant User Guide pages; Kaggle Learn
+"Intro to Machine Learning" + "Intermediate ML" (free).</p>
+
+<p>Mini-project: <strong>Titanic</strong> on Kaggle, end-to-end with a Pipeline —
+train, cross-validate, submit. First ML leaderboard entry.</p>
+
+<h2>Phase 5 — Jupyter &amp; working style (ongoing)</h2>
+
+<p>Jupyter is the DS IDE: cells, inline plots, rapid iteration.
+<code>pip install jupyterlab</code>, then in VS Code install the <strong>Jupyter
+extension</strong> — notebooks run inside your editor with IntelliSense.</p>
+
+<p>Culture shift from Java: notebooks are for <em>exploration</em>; anything you
+keep goes into <code>.py</code> modules with tests. Notebooks murder git diffs —
+clear outputs before committing (<code>jupyter nbconvert --clear-output --inplace</code>).</p>
+
+<h2>Phase 6 — The LLM track (pick your lane — you can do both)</h2>
+
+<p><strong>Lane A: LLM application development</strong> (no GPU, most career-relevant)</p>
+
+<ol>
+  <li><strong>openai SDK</strong> (already installed): chat completions, streaming,
+      structured outputs (JSON → pydantic model), function/tool calling.
+      Java framing: it's a typed REST client; tool calling = the model
+      asking <em>your</em> code to invoke a method and return JSON.</li>
+  <li><strong>Embeddings + RAG</strong>: chunk documents → embed → store in a vector DB
+      (<code>chromadb</code> is the zero-setup choice; pgvector if you're
+      Postgres-minded) → retrieve top-k → stuff into the prompt. You already
+      know search systems; RAG is search + prompt assembly.</li>
+  <li><strong>FastAPI + pydantic</strong> to serve your LLM app — this is Spring Boot
+      territory; you'll be productive in a day.</li>
+  <li>Frameworks (LangChain/LlamaIndex): learn the primitives first, use a
+      framework only when the boilerplate actually hurts.</li>
+  <li>Keys via environment variables + <code>python-dotenv</code> — never hardcode.
+      The <strong>OpenAI Cookbook</strong> is the best free resource here.</li>
+</ol>
+
+<p><strong>Lane B: Deep learning / open models</strong> (GPU helps)</p>
+
+<ol>
+  <li><code>transformers</code> (already installed): <code>pipeline("sentiment-analysis")</code>
+      in 3 lines, then tokenizers, then the underlying model classes.</li>
+  <li>Run local models with <strong>Ollama</strong> (free, no API key,
+      OpenAI-compatible endpoint) — great for development.</li>
+  <li>PyTorch fundamentals: tensor ≈ numpy array with autograd + GPU;
+      <code>nn.Module</code>; the training loop. Then LoRA fine-tuning (<code>peft</code>).</li>
+  <li>Resource: Karpathy's "Neural Networks: Zero to Hero" (YouTube, free),
+      and the free book <strong>d2l.ai</strong> (Dive into Deep Learning).</li>
+</ol>
+
+<h2>Phase 7 — MLOps awareness (your tech-lead superpower)</h2>
+
+<p>You already know this world — just map the vocabulary:</p>
+
+<table>
+  <thead>
+    <tr><th>DS/ML practice</th><th>Java-world analog</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>FastAPI service around a model</td><td>Spring Boot microservice</td></tr>
+    <tr><td>Docker slim images, multi-stage builds</td><td>same discipline, <code>python:3.11-slim</code> base</td></tr>
+    <tr><td><code>uv</code>/<code>poetry</code> lockfiles</td><td>Maven/Gradle dependency locking</td></tr>
+    <tr><td>MLflow / Weights &amp; Biases</td><td>experiment tracking ≈ CI metrics dashboards</td></tr>
+    <tr><td>pytest + data validations</td><td>unit tests + Bean Validation</td></tr>
+    <tr><td>model registry, staged rollout</td><td>artifact repo + canary deploys</td></tr>
+  </tbody>
+</table>
+
+<p>Teams fail at ML for engineering reasons, not math reasons — this is where
+you add outsized value.</p>
+
+
+<h2>The short, high-signal reading list</h2>
+
+<p><strong>Official docs (bookmark — these are genuinely good):</strong></p>
+<ul>
+  <li>NumPy: <a href="https://numpy.org/doc/">numpy.org/doc</a> — "Absolute basics" then "Quickstart"</li>
+  <li>pandas: <a href="https://pandas.pydata.org/">pandas.pydata.org</a> — "10 minutes to pandas", then the "Group by" guide</li>
+  <li>scikit-learn: <a href="https://scikit-learn.org/">scikit-learn.org</a> — "Getting Started" + User Guide sections</li>
+  <li>matplotlib: <a href="https://matplotlib.org/stable/tutorials/">matplotlib.org/stable/tutorials</a></li>
+  <li>transformers: <a href="https://huggingface.co/docs/transformers">huggingface.co/docs/transformers</a></li>
+  <li>OpenAI Cookbook: <a href="https://github.com/openai/openai-cookbook">github.com/openai/openai-cookbook</a> (recipes for Lane A)</li>
+  <li>Prompt Engineering Guide: <a href="https://www.promptingguide.ai/">promptingguide.ai</a></li>
+</ul>
+
+<p><strong>Free books &amp; courses (the cream):</strong></p>
+<ul>
+  <li><em>Python Data Science Handbook</em> — Jake VanderPlas (entire book free, GitHub)</li>
+  <li><em>Dive into Deep Learning</em> — <a href="https://d2l.ai/">d2l.ai</a> (free, PyTorch-first)</li>
+  <li><strong>Kaggle Learn</strong> — free hands-on micro-courses: Pandas, Intro/Intermediate ML</li>
+  <li><strong>DeepLearning.AI short courses</strong> — free 1–2 h each: prompt engineering, RAG, agents</li>
+  <li>fast.ai <em>Practical Deep Learning</em> — free, top-down (for Lane B, later)</li>
+</ul>
+
+<p><strong>Paid but worth it:</strong></p>
+<ul>
+  <li><em>Hands-On Machine Learning</em> — Aurélien Géron (the standard sklearn+DL book)</li>
+  <li><em>Designing Machine Learning Systems</em> — Chip Huyen (the MLOps book — fits your role)</li>
+</ul>
+
+<p><strong>Video:</strong></p>
+<ul>
+  <li>StatQuest (statistics/ML concepts, zero fluff)</li>
+  <li>Andrej Karpathy — "Neural Networks: Zero to Hero" + his "Intro to LLMs" talk</li>
+  <li>3Blue1Brown — linear algebra &amp; neural-net intuition</li>
+</ul>
+
+<h2>A realistic 6-week plan (nights + weekends)</h2>
+
+<table>
+  <thead>
+    <tr><th>Week</th><th>Goal</th><th>Done means</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>NumPy: quickstart + ~30 of the 100 exercises</td><td>can reshape, mask, broadcast without googling every time</td></tr>
+    <tr><td>2</td><td>pandas: "10 minutes" + Kaggle Pandas course</td><td>mini-project: clean + group + pivot a real CSV</td></tr>
+    <tr><td>3</td><td>matplotlib/seaborn + sklearn Getting Started</td><td>4 charts of your data; understand <code>fit</code>/<code>predict</code></td></tr>
+    <tr><td>4</td><td>sklearn Pipeline + cross-validation</td><td><strong>Titanic submitted</strong> on Kaggle</td></tr>
+    <tr><td>5</td><td>openai SDK: chat, structured outputs, tool calling</td><td>a CLI chatbot with tools, keys via .env</td></tr>
+    <tr><td>6</td><td>embeddings + chromadb + FastAPI</td><td>capstone: <strong>RAG over your own notes, served as an API</strong>, pushed to this repo</td></tr>
+  </tbody>
+</table>
+
+<p>After week 6: either deepen Lane A (evaluations, agents, LangGraph) or
+start Lane B (Ollama locally → transformers → PyTorch training loop).</p>
+
+<p>Rule that beats any roadmap: <strong>one tiny shipped thing per week</strong> — a
+script, a chart, a README. Momentum compounds; courses don't.</p>
+
+
+<script>
+  (function () {
+    var btn = document.getElementById("theme-toggle");
+
+    function save(value) {
+      try { localStorage.setItem("theme", value); } catch (e) { /* ignore */ }
+    }
+
+    function syncLabel() {
+      btn.textContent = document.body.classList.contains("dark") ? "☀️ Light" : "🌙 Dark";
+    }
+
+    btn.addEventListener("click", function () {
+      var dark = document.body.classList.toggle("dark");
+      save(dark ? "dark" : "light");
+      syncLabel();
+    });
+
+    syncLabel();
+  })();
+</script>
+
+</body>
+</html>
