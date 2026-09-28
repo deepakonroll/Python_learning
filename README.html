@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Python for Java Developers — a 13-lesson guided tour</title>
+<title>Python for Java Developers — a 14-lesson guided tour</title>
 <style>
   :root {
     --bg: #ffffff; --fg: #24292f; --muted: #57606a; --border: #d0d7de;
@@ -65,7 +65,7 @@
   })();
 </script>
 
-<h1>Python for Java Developers — a 13-lesson guided tour</h1>
+<h1>Python for Java Developers — a 14-lesson guided tour</h1>
 
 <p>Every lesson is a <strong>standalone runnable file</strong>: run it, read its output,
 then read the source top-to-bottom. Java equivalents are called out in the
@@ -105,8 +105,14 @@ to be read and run standalone.</p>
     <tr><td><code>11_decorators.py</code></td><td>decorators with and without arguments, <code>@cache</code></td><td>annotations that actually run (AOP / Decorator pattern)</td></tr>
     <tr><td><code>12_context_managers_and_files.py</code></td><td><code>with</code>, files, <code>pathlib</code>, JSON</td><td>try-with-resources, <code>java.nio.file</code>, Jackson</td></tr>
     <tr><td><code>13_modules_and_stdlib.py</code></td><td>imports, packages, stdlib tour, logging, pip/venv</td><td>packages, classpath, SLF4J, Maven/Gradle</td></tr>
+    <tr><td><code>14_trading_data.py</code></td><td>yfinance market data, DataFrame analysis, vectorized backtest <em>(side-quest)</em></td><td>REST client + Jackson, ResultSet, Streams, SQL window functions</td></tr>
   </tbody>
 </table>
+
+<blockquote>
+<p>Lesson 14 is an optional <strong>side-quest</strong>: it applies the pandas/numpy stack
+to live market data (needs <code>pip install yfinance</code> — already installed here).</p>
+</blockquote>
 
 <h2>The five differences that matter most</h2>
 
@@ -152,7 +158,7 @@ pytest</code></pre>
   <li>threads &amp; multiprocessing (ask about the GIL)</li>
   <li><code>pytest</code> in depth, <code>typing</code> deep dive (<code>Generic</code>, <code>TypeVar</code>, <code>TypedDict</code>)</li>
   <li>packaging &amp; publishing (<code>pyproject.toml</code>, PyPI)</li>
-  <li>web/API frameworks (FastAPI), data stack (pandas, numpy)</li>
+  <li>web/API frameworks (FastAPI), data stack in depth (pandas/numpy — lesson 14 is a first taste)</li>
   <li>See <code>ROADMAP.md</code> for the guided path into data science &amp; LLMs</li>
 </ul>
 

@@ -1,4 +1,4 @@
-# Python for Java Developers — a 13-lesson guided tour
+# Python for Java Developers — a 14-lesson guided tour
 
 Every lesson is a **standalone runnable file**: run it, read its output,
 then read the source top-to-bottom. Java equivalents are called out in the
@@ -35,6 +35,10 @@ Get-ChildItem *.py | Sort-Object Name | ForEach-Object { python $_.FullName }
 | 11_decorators.py | decorators with and without arguments, `@cache` | annotations that actually run (AOP / Decorator pattern) |
 | 12_context_managers_and_files.py | `with`, files, `pathlib`, JSON | try-with-resources, `java.nio.file`, Jackson |
 | 13_modules_and_stdlib.py | imports, packages, stdlib tour, logging, pip/venv | packages, classpath, SLF4J, Maven/Gradle |
+| 14_trading_data.py | yfinance market data, DataFrame analysis, vectorized backtest *(side-quest)* | REST client + Jackson, ResultSet, Streams, SQL window functions |
+
+> Lesson 14 is an optional **side-quest**: it applies the pandas/numpy stack
+> to live market data (needs `pip install yfinance` — already installed here).
 
 ## The five differences that matter most
 
@@ -74,7 +78,7 @@ pytest
 - threads & multiprocessing (ask about the GIL)
 - `pytest` in depth, `typing` deep dive (`Generic`, `TypeVar`, `TypedDict`)
 - packaging & publishing (`pyproject.toml`, PyPI)
-- web/API frameworks (FastAPI), data stack (pandas, numpy)
+- web/API frameworks (FastAPI), data stack in depth (pandas/numpy — lesson 14 is a first taste)
 - See **ROADMAP.md** for the guided path into data science & LLMs
 
 Read the official tutorial next: <https://docs.python.org/3/tutorial/> —

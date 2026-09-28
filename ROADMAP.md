@@ -1,6 +1,6 @@
 # Roadmap: Python for Data Science & LLMs
 
-A continuation of the 13-lesson tour, aimed at a Java tech lead going into
+A continuation of the 14-lesson tour, aimed at a Java tech lead going into
 data science and LLM application development. Every concept keeps the same
 promise as the lessons: **here is the Java thing you already know**.
 
@@ -77,6 +77,9 @@ course (hands-on, in-browser).
 
 Mini-project: take a real CSV (NYC taxi sample, IMDB, or your own data),
 clean it, group/pivot it, export a summary.
+
+Side-quest: `14_trading_data.py` runs these exact drills on live market data
+(yfinance) and ends with a vectorized SMA200 backtest.
 
 ## Phase 3 — Visualization (2–3 days)
 
