@@ -49,9 +49,9 @@ def fetch_updates(token: str, getter=requests.get) -> list[dict]:
     return data.get("result") or []
 
 
-def extract_command(updates: list[dict], owner_chat_id: str) -> str | None:
-    """Last valid command from the owner's chat; others are ignored."""
-    found = None
+def extract_commands(updates: list[dict], owner_chat_id: str) -> list[str]:
+    """All valid commands from the owner's chat, in chronological order."""
+    found: list[str] = []
     for update in updates:
         message = update.get("message") or {}
         chat_id = str((message.get("chat") or {}).get("id", ""))
@@ -59,7 +59,7 @@ def extract_command(updates: list[dict], owner_chat_id: str) -> str | None:
             continue
         text = (message.get("text") or "").strip().split(" ")[0].lower()
         if text in COMMANDS:
-            found = text
+            found.append(text)
     return found
 
 
@@ -98,20 +98,28 @@ def _symbol_hint(store: StateStore) -> str:
 
 
 def process_commands(cfg: Config, store: StateStore) -> bool:
-    """Poll for owner commands; returns True when alerts should run."""
+    """Poll for owner commands; returns True when alerts should run.
+
+    EVERY queued command is applied in chronological order and acknowledged in
+    a single combined reply that always ends with the current state - so you
+    always get a definitive 'yes it took effect' answer, never silence.
+    """
     if not cfg.telegram_token or not cfg.telegram_chat_id:
         return True
-    cmd = extract_command(fetch_updates(cfg.telegram_token), cfg.telegram_chat_id)
+    cmds = extract_commands(fetch_updates(cfg.telegram_token), cfg.telegram_chat_id)
+    if not cmds:
+        return is_enabled(store)
 
-    if cmd == "/disable":
-        store.set_control({"enabled": False})
-        _reply(cfg, "🛑 Alerts disabled — cloud runs stay idle.\n"
-                    "Tap /enable to resume.")
-        return False
-    if cmd == "/enable":
-        store.set_control({"enabled": True})
-        _reply(cfg, "✅ Alerts enabled — evaluating from this run.")
-        return True
-    if cmd == "/status":
-        _reply(cfg, _status_text(store))
+    applied: list[str] = []
+    for cmd in cmds:
+        if cmd == "/disable":
+            store.set_control({"enabled": False})
+            applied.append("🛑 /disable → applied")
+        elif cmd == "/enable":
+            store.set_control({"enabled": True})
+            applied.append("✅ /enable → applied")
+        else:                                     # /status - answered by summary
+            applied.append("📊 /status → report below")
+
+    _reply(cfg, "\n".join(applied) + "\n" + _status_text(store))
     return is_enabled(store)

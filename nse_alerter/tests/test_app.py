@@ -198,7 +198,7 @@ def test_disable_stops_fetching_and_enable_resumes(rig, monkeypatch):
     assert app.run(cfg) == 0
     assert provider.calls == 1                              # no market fetch
     assert StateStore(cfg.state_file).get_control()["enabled"] is False
-    assert any("disabled" in r for r in replies)
+    assert any("/disable" in r for r in replies)            # explicit acknowledgement
 
     monkeypatch.setattr(control, "fetch_updates", lambda token: [])
     assert app.run(cfg) == 0                                # stays off silently
@@ -209,7 +209,7 @@ def test_disable_stops_fetching_and_enable_resumes(rig, monkeypatch):
     assert app.run(cfg) == 0
     assert provider.calls == 2                              # evaluated right away
     assert StateStore(cfg.state_file).get_control()["enabled"] is True
-    assert any("enabled" in r for r in replies)
+    assert any("/enable" in r for r in replies)             # explicit acknowledgement
 
 
 def test_status_replies_but_keeps_running(rig, monkeypatch):

@@ -1,24 +1,25 @@
 """Telegram command parsing/polling (mobile enable/disable)."""
 
-from nse_alerts.control import extract_command, fetch_updates
+from nse_alerts.control import extract_commands, fetch_updates
 from nse_alerts.state import StateStore, SymbolState
 
 
 def test_owner_command_extracted():
     updates = [{"message": {"chat": {"id": 42}, "text": "/disable"}}]
-    assert extract_command(updates, "42") == "/disable"
+    assert extract_commands(updates, "42") == ["/disable"]
 
 
-def test_last_command_wins():
+def test_all_commands_kept_in_chronological_order():
     updates = [{"message": {"chat": {"id": 42}, "text": "/disable"}},
+               {"message": {"chat": {"id": 42}, "text": "hello"}},
                {"message": {"chat": {"id": 42}, "text": "/enable"}}]
-    assert extract_command(updates, 42) == "/enable"        # int chat id ok
+    assert extract_commands(updates, 42) == ["/disable", "/enable"]  # int ok too
 
 
 def test_other_chat_and_noise_ignored():
     updates = [{"message": {"chat": {"id": 999}, "text": "/disable"}},
                {"message": {"chat": {"id": 42}, "text": "hello"}}]
-    assert extract_command(updates, "42") is None
+    assert extract_commands(updates, "42") == []
 
 
 def test_fetch_updates_network_failure_is_safe():
