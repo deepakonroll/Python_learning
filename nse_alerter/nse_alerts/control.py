@@ -78,7 +78,8 @@ def _reply(cfg: Config, text: str) -> None:
 def _status_text(store: StateStore) -> str:
     symbol = _symbol_hint(store)
     state = store.load().get(symbol)
-    lines = [f"🛑 Alerts: {'OFF' if not is_enabled(store) else 'ON'}"]
+    enabled = is_enabled(store)
+    lines = [(f"✅ Alerts: ON" if enabled else f"🛑 Alerts: OFF")]
     if state:
         lines.append(f"📊 {symbol} side={state.last_side} · "
                      f"last bar {state.last_processed_bar or 'n/a'}")
