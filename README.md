@@ -1,4 +1,4 @@
-# Python for Java Developers — a 14-lesson guided tour
+# Python for Java Developers — a 15-lesson guided tour
 
 Every lesson is a **standalone runnable file**: run it, read its output,
 then read the source top-to-bottom. Java equivalents are called out in the
@@ -12,6 +12,7 @@ Tested on Python 3.11 (needs **3.10+** for the `match` lesson).
 # from this folder (it is the project root):
 python 01_basics_and_running.py       # one lesson at a time, or run all:
 Get-ChildItem *.py | Sort-Object Name | ForEach-Object { python $_.FullName }
+streamlit run 15_trading_dashboard.py # browser UI (lesson 15)
 ```
 
 > The filenames start with digits on purpose: it keeps the reading order
@@ -36,9 +37,11 @@ Get-ChildItem *.py | Sort-Object Name | ForEach-Object { python $_.FullName }
 | 12_context_managers_and_files.py | `with`, files, `pathlib`, JSON | try-with-resources, `java.nio.file`, Jackson |
 | 13_modules_and_stdlib.py | imports, packages, stdlib tour, logging, pip/venv | packages, classpath, SLF4J, Maven/Gradle |
 | 14_trading_data.py | yfinance market data, DataFrame analysis, vectorized backtest *(side-quest)* | REST client + Jackson, ResultSet, Streams, SQL window functions |
+| 15_trading_dashboard.py | Streamlit browser UI: widgets, caching, plotly charts *(side-quest)* | Spring MVC / REST + chart lib — a UI with zero JS/HTML/CSS |
 
-> Lesson 14 is an optional **side-quest**: it applies the pandas/numpy stack
-> to live market data (needs `pip install yfinance` — already installed here).
+> Lessons 14–15 are an optional **side-quest** on real market data: 14 needs
+> `pip install yfinance` (already installed here); 15 adds `streamlit` +
+> `plotly` and runs with `streamlit run 15_trading_dashboard.py`.
 
 ## The five differences that matter most
 

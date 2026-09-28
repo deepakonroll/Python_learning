@@ -22,3 +22,6 @@ venv/
 # OS
 Thumbs.db
 .DS_Store
+
+# Regenerated lesson output (lesson 14 charts)
+charts/

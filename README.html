@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Python for Java Developers — a 14-lesson guided tour</title>
+<title>Python for Java Developers — a 15-lesson guided tour</title>
 <style>
   :root {
     --bg: #ffffff; --fg: #24292f; --muted: #57606a; --border: #d0d7de;
@@ -65,7 +65,7 @@
   })();
 </script>
 
-<h1>Python for Java Developers — a 14-lesson guided tour</h1>
+<h1>Python for Java Developers — a 15-lesson guided tour</h1>
 
 <p>Every lesson is a <strong>standalone runnable file</strong>: run it, read its output,
 then read the source top-to-bottom. Java equivalents are called out in the
@@ -77,7 +77,8 @@ docstring at the top of every file and in <code># Java:</code>-style comments in
 
 <pre><code class="language-powershell"># from this folder (it is the project root):
 python 01_basics_and_running.py       # one lesson at a time, or run all:
-Get-ChildItem *.py | Sort-Object Name | ForEach-Object { python $_.FullName }</code></pre>
+Get-ChildItem *.py | Sort-Object Name | ForEach-Object { python $_.FullName }
+streamlit run 15_trading_dashboard.py # browser UI (lesson 15)</code></pre>
 
 <blockquote>
 <p>The filenames start with digits on purpose: it keeps the reading order
@@ -106,12 +107,14 @@ to be read and run standalone.</p>
     <tr><td><code>12_context_managers_and_files.py</code></td><td><code>with</code>, files, <code>pathlib</code>, JSON</td><td>try-with-resources, <code>java.nio.file</code>, Jackson</td></tr>
     <tr><td><code>13_modules_and_stdlib.py</code></td><td>imports, packages, stdlib tour, logging, pip/venv</td><td>packages, classpath, SLF4J, Maven/Gradle</td></tr>
     <tr><td><code>14_trading_data.py</code></td><td>yfinance market data, DataFrame analysis, vectorized backtest <em>(side-quest)</em></td><td>REST client + Jackson, ResultSet, Streams, SQL window functions</td></tr>
+    <tr><td><code>15_trading_dashboard.py</code></td><td>Streamlit browser UI: widgets, caching, plotly charts <em>(side-quest)</em></td><td>Spring MVC / REST + chart lib — a UI with zero JS/HTML/CSS</td></tr>
   </tbody>
 </table>
 
 <blockquote>
-<p>Lesson 14 is an optional <strong>side-quest</strong>: it applies the pandas/numpy stack
-to live market data (needs <code>pip install yfinance</code> — already installed here).</p>
+<p>Lessons 14–15 are an optional <strong>side-quest</strong> on real market data: 14 needs
+<code>pip install yfinance</code> (already installed here); 15 adds <code>streamlit</code> +
+<code>plotly</code> and runs with <code>streamlit run 15_trading_dashboard.py</code>.</p>
 </blockquote>
 
 <h2>The five differences that matter most</h2>

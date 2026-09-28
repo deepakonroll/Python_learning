@@ -30,7 +30,7 @@ YEARS = 10
 TRADING_DAYS = 252  # sessions in a trading year (business-calendar constant)
 
 
-def fetch_prices(ticker: str = TICKER) -> tuple[pd.DataFrame, str]:
+def fetch_prices(ticker: str = TICKER, years: int = YEARS) -> tuple[pd.DataFrame, str]:
     """Download daily OHLCV bars; fall back to synthetic data when offline.
 
     Java: this try/except is lesson 09's EAFP idiom - here it also absorbs
@@ -39,7 +39,7 @@ def fetch_prices(ticker: str = TICKER) -> tuple[pd.DataFrame, str]:
     try:
         df = yf.download(
             ticker,
-            period=f"{YEARS}y",      # 10 years of daily bars
+            period=f"{years}y",      # e.g. 10 years of daily bars
             auto_adjust=True,        # Close adjusted for splits/dividends
             progress=False,          # keep the output clean
         )
@@ -53,18 +53,18 @@ def fetch_prices(ticker: str = TICKER) -> tuple[pd.DataFrame, str]:
         return df, f"live data from Yahoo Finance ({len(df)} rows)"
     except Exception as exc:  # rate limit, offline, API change...
         return (
-            synthetic_prices(ticker),
+            synthetic_prices(ticker, years),
             f"offline fallback ({type(exc).__name__}: {exc})",
         )
 
 
-def synthetic_prices(ticker: str = TICKER) -> pd.DataFrame:
+def synthetic_prices(ticker: str = TICKER, years: int = YEARS) -> pd.DataFrame:
     """Deterministic fake OHLCV (numpy geometric random walk).
 
     Java: a test fixture factory - same shape as production data, so every
     section below runs with or without network access.
     """
-    n = YEARS * TRADING_DAYS
+    n = years * TRADING_DAYS
     rng = np.random.default_rng(42)              # seeded -> reproducible
     daily = rng.normal(0.0004, 0.011, n)         # ~10% drift, ~17% vol/yr
     close = 100.0 * np.exp(np.cumsum(daily))     # GBM prices, zero loops
@@ -186,9 +186,10 @@ def main() -> None:
         print(f"wrote {len(lines) - 1} rows + header: {lines[0]}")
 
     # ------------------------------------------------------------------
-    # 7) Optional chart - roadmap Phase 3 territory; skipped if absent.
+    # 7) Charts - roadmap Phase 3 territory. A 2x2 report figure; in Java
+    #    this is JFreeChart plumbing - here it is ~25 declarative lines.
     # ------------------------------------------------------------------
-    print("\n=== 7) chart (optional) ===")
+    print("\n=== 7) charts ===")
     try:
         import matplotlib
     except ImportError:
@@ -196,15 +197,43 @@ def main() -> None:
     else:
         matplotlib.use("Agg")                    # headless backend, no GUI
         import matplotlib.pyplot as plt
-        out = Path(tempfile.gettempdir()) / f"{TICKER}_normalized.png"
+
+        out_dir = Path(__file__).resolve().parent / "charts"
+        out_dir.mkdir(exist_ok=True)             # gitignored output folder
+        out = out_dir / f"{TICKER}_report.png"
+
         norm = close / close.iloc[0]             # start every series at 1.0
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(norm.index, norm.values, label=TICKER)
-        ax.plot(sma_slow.index, (sma_slow / close.iloc[0]).values, label="SMA200")
-        ax.legend()
-        ax.set_title(f"{TICKER} normalized (incl. SMA200)")
-        fig.savefig(out, dpi=110, bbox_inches="tight")
+        sma_norm = sma_slow / close.iloc[0]
+        drawdown = buy_hold / buy_hold.cummax() - 1.0
+
+        fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+        axes[0, 0].plot(norm.index, norm.values, label=TICKER)
+        axes[0, 0].plot(sma_norm.index, sma_norm.values, label="SMA200")
+        axes[0, 0].set_title("Normalized price (base = 1.0)")
+        axes[0, 0].legend()
+
+        axes[0, 1].fill_between(drawdown.index, drawdown.values, 0.0,
+                                color="firebrick", alpha=0.6)
+        axes[0, 1].set_title("Buy & hold drawdown")
+        axes[0, 1].set_ylabel("drawdown")
+
+        axes[1, 0].bar(monthly_ret.index, monthly_ret.values,
+                       width=20, color="seagreen")
+        axes[1, 0].axhline(0, color="black", linewidth=0.8)
+        axes[1, 0].set_title("Monthly returns")
+
+        axes[1, 1].plot(ann_vol.index, ann_vol.values, color="darkorange")
+        axes[1, 1].set_title("21-day annualized volatility")
+        axes[1, 1].set_ylabel("volatility")
+
+        fig.tight_layout()
+        fig.savefig(out, dpi=110)
         print(f"[chart] wrote {out}")
+        try:
+            import os
+            os.startfile(out)                    # Windows: pop it open
+        except (AttributeError, OSError):
+            pass                                 # other OS / no GUI: file stays
 
     print("\nNext: ROADMAP.md Phase 1 (NumPy) and Phase 2 (pandas).")
 
