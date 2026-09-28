@@ -1,0 +1,52 @@
+# Runs the SAME nse_alerter app on GitHub's servers - your PC can stay off.
+# Cron is UTC; NSE = IST (no DST) -> session 09:15-15:35 IST = 03:45-10:05 UTC.
+# Three tight windows keep us well inside the private-repo free 2,000 min/month:
+#   03:45-03:55, 04:00-09:55, 10:00-10:05  (every 5 min, Mon-Fri) = 77 runs/day
+name: nse-alerts
+
+on:
+  schedule:
+    - cron: '45-59/5 3 * * 1-5'
+    - cron: '*/5 4-9 * * 1-5'
+    - cron: '0-5/5 10 * * 1-5'
+  workflow_dispatch:            # manual "Run workflow" button for testing
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nse-alerts             # never run two evaluations at once
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: nse_alerter/requirements-cloud.txt
+
+      # Dedupe state survives across runs (restore latest, save fresh each time).
+      # A cache miss is self-healing: the app records a silent baseline instead
+      # of double-alerting (worst case: one cross during the gap is skipped).
+      - uses: actions/cache@v4
+        with:
+          path: nse_alerter/state.json
+          key: nse-state-${{ github.run_id }}
+          restore-keys: |
+            nse-state-
+
+      - name: Install dependencies
+        run: pip install -r nse_alerter/requirements-cloud.txt
+
+      - name: Evaluate EMA20 cross and notify
+        run: python nse_alerter/main.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          STATE_FILE: ${{ github.workspace }}/nse_alerter/state.json

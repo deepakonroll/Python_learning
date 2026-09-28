@@ -1,0 +1,147 @@
+"""End-to-end flow with fakes: gate -> fetch -> cross -> dedupe -> send."""
+
+from __future__ import annotations
+
+import pytest
+
+from nse_alerts import app
+from nse_alerts.providers.base import ProviderError
+from nse_alerts.state import StateStore
+from tests.conftest import MONDAY, SATURDAY, falling, make_candles, make_config, rising
+
+
+class FakeProvider:
+    name = "fake"
+
+    def __init__(self, df=None, error: str | None = None):
+        self.df = df
+        self.error = error
+        self.calls = 0
+
+    def fetch(self, symbol, interval, lookback):
+        self.calls += 1
+        if self.error:
+            raise ProviderError(self.error)
+        return self.df.copy()
+
+
+class Recorder:
+    def __init__(self):
+        self.messages: list[tuple[str, str, str]] = []
+
+    def __call__(self, token, chat_id, text):
+        self.messages.append((token, chat_id, text))
+
+
+@pytest.fixture
+def rig(monkeypatch, tmp_path):
+    """Fake clock (Monday 11:30 IST), fake provider, recorded sends."""
+    sent = Recorder()
+    provider = FakeProvider(make_candles(falling(26)))   # 09:15..11:25, all completed
+    monkeypatch.setattr(app, "now_ist", lambda: MONDAY)
+    monkeypatch.setattr(app, "build_providers", lambda cfg: [provider])
+    monkeypatch.setattr(app, "send_telegram", sent)
+    cfg = make_config(tmp_path)
+    return cfg, provider, sent
+
+
+def test_first_run_records_baseline_without_alerting(rig):
+    cfg, provider, sent = rig
+    assert app.run(cfg) == 0
+    assert sent.messages == []                           # no alert on startup
+    state = StateStore(cfg.state_file).get(cfg.symbol)
+    assert state is not None and state.last_side == "DOWN"
+
+
+def test_cross_sends_exactly_once_then_dedupes(rig):
+    cfg, provider, sent = rig
+    assert app.run(cfg) == 0                             # baseline: DOWN
+    assert sent.messages == []
+
+    provider.df = make_candles(falling(26) + rising(26))  # side flips to UP
+    assert app.run(cfg) == 0
+    assert len(sent.messages) == 1
+    token, chat_id, text = sent.messages[0]
+    assert token == "test-token" and chat_id == "42"
+    assert "BUY" in text and "EMA20" in text
+
+    assert app.run(cfg) == 0                             # same data again
+    assert len(sent.messages) == 1                       # still just one send
+    state = StateStore(cfg.state_file).get(cfg.symbol)
+    assert state.last_side == "UP"
+    assert state.last_event_side == "BUY"
+
+
+def test_dry_run_never_sends_or_writes_state(rig):
+    cfg, provider, sent = rig
+    assert app.run(cfg) == 0                             # baseline written
+    before = cfg.state_file.read_text(encoding="utf-8")
+
+    provider.df = make_candles(falling(26) + rising(26))  # would cross
+    assert app.run(cfg, dry_run=True) == 0
+    assert sent.messages == []
+    assert cfg.state_file.read_text(encoding="utf-8") == before
+
+
+def test_missing_telegram_credentials_fail_fast_before_fetch(rig):
+    cfg, provider, sent = rig
+    cfg = make_config(cfg.state_file.parent, telegram_token=None, telegram_chat_id=None)
+    assert app.run(cfg) == 1
+    assert provider.calls == 0                           # never touched the feed
+    assert sent.messages == []
+
+
+def test_outside_session_is_a_noop(rig, monkeypatch):
+    cfg, provider, _ = rig
+    monkeypatch.setattr(app, "now_ist", lambda: SATURDAY)
+    assert app.run(cfg) == 0
+    assert provider.calls == 0
+
+
+def test_holiday_is_a_noop(rig, monkeypatch):
+    from dataclasses import replace
+    cfg, provider, _ = rig
+    cfg = replace(cfg, holidays=frozenset({MONDAY.date()}))
+    assert app.run(cfg) == 0
+    assert provider.calls == 0
+
+
+def test_all_providers_down_returns_3(rig):
+    cfg, provider, _ = rig
+    provider.error = "network down"
+    assert app.run(cfg) == 3
+
+
+def test_test_notify_works_outside_session(rig, monkeypatch):
+    cfg, provider, sent = rig
+    monkeypatch.setattr(app, "now_ist", lambda: SATURDAY)
+    assert app.run(cfg, test_notify=True) == 0
+    assert len(sent.messages) == 1
+    assert "test" in sent.messages[0][2].lower()
+    assert provider.calls == 0                           # no market data needed
+
+
+def test_replay_reports_crosses_without_sending_or_writing(rig):
+    import pandas as pd
+
+    from tests.conftest import falling, make_candles, rising
+
+    cfg, provider, sent = rig
+    # Friday's session: prev day declines (enters DOWN), Friday rallies -> one BUY
+    provider.df = pd.concat([
+        make_candles(falling(60), start="2026-09-24 09:15"),
+        make_candles(rising(60), start="2026-09-25 09:15"),
+    ])
+    events = app.replay(cfg, __import__("datetime").date(2026, 9, 25))
+    assert [e.side for e in events] == ["BUY"]
+    assert events[0].bar_time.date().isoformat() == "2026-09-25"
+    assert sent.messages == []                           # replay never notifies
+    assert not cfg.state_file.exists()                   # replay never writes state
+
+
+def test_replay_on_day_without_bars_returns_empty(rig):
+    import datetime as dt
+
+    cfg, provider, _ = rig
+    provider.df = make_candles(falling(60), start="2026-09-24 09:15")
+    assert app.replay(cfg, dt.date(2026, 9, 26)) == []  # Saturday: no bars

@@ -1,0 +1,223 @@
+# NSE Alerter — NIFTY Futures 5m × EMA20 Cross → Telegram
+
+Rule: **on every completed 5-minute candle of NIFTY futures, if the close flips
+from below→above the 20 EMA → `BUY` alert; above→below → `SELL` alert.**
+Alerts are cross-based only (silent while price stays on the same side),
+delivered to **Telegram** (push on your phone), deduplicated via local state.
+
+```
+nse_alerter/
+├── main.py               # entry point (one evaluation per invocation)
+├── .env                  # your secrets/config (created from .env.example, gitignored)
+├── state.json            # dedupe state (auto-created, gitignored)
+├── nse_alerter.log       # appended run log (LOG_FILE in .env)
+├── nse_alerts/           # the package
+│   ├── app.py            # gate → fetch → evaluate → dedupe → send → save
+│   ├── signals.py        # EMA20 cross engine (the rule)
+│   ├── market_hours.py   # NSE 09:15–15:35 IST, Mon–Fri (+holiday list)
+│   ├── state.py          # JSON state store (exactly-once alerts)
+│   ├── notify.py         # Telegram sender
+│   ├── config.py         # env-driven config
+│   └── providers/        # tv (TradingView futures) → yahoo (spot proxy) → kite (later)
+└── tests/                # 45 offline tests: `python -m pytest`
+```
+
+## 1. Install
+
+```powershell
+cd d:\Cursor\python_for_java_devs\nse_alerter
+pip install -r requirements.txt      # deps are already installed on this machine
+```
+
+## 2. Telegram setup (~2 minutes)
+
+**Step A — create the bot and get the TOKEN:**
+
+1. Install Telegram (phone or desktop) and sign in.
+2. In the search box, type **`BotFather`** — pick the official one (✓ verified badge).
+   It is Telegram's own "bot that makes bots". 
+3. Send it the command: `/newbot`
+4. It asks *"What name do you want for your bot?"* → type any **display name**,
+   e.g. `NSE Alerter` (spaces OK, this is just a label).
+5. It then asks *"What username do you want for your bot?"* → pick a username
+   that **ends with `bot`** and is lowercase, e.g. `deepak_nse_alerter_bot`.
+   If taken, add digits.
+6. BotFather replies with a success message containing your **API token** —
+   a long string like `7925846123:AAHk3...xyz`. **Copy it.**
+7. Paste it into `nse_alerter\.env`:
+   ```ini
+   TELEGRAM_BOT_TOKEN=7925846123:AAHk3...xyz
+   ```
+   (Treat it like a password — don't share it.)
+
+**Step B — get your CHAT ID (automatic):**
+
+8. In Telegram, search for the username **you just created** (e.g. `deepak_nse_alerter_bot`),
+   open it and press **START** (or send `hi`). This creates the chat your alerts will enter.
+9. On your PC:
+   ```powershell
+   cd d:\Cursor\python_for_java_devs\nse_alerter
+   python get_chat_id.py
+   ```
+   It prints your `TELEGRAM_CHAT_ID` and **saves it into `.env` automatically**.
+
+**Step C — verify:**
+
+10. ```powershell
+    python main.py --test-notify     # your phone should buzz with a test message
+    ```
+
+<details>
+<summary>Manual alternative for the chat id (browser way)</summary>
+
+After step 8, open in your browser (replace TOKEN with your actual token):
+`https://api.telegram.org/bot<TOKEN>/getUpdates`
+→ find `"chat":{"id": 7182...}` → copy that number into `TELEGRAM_CHAT_ID=` in `.env`.
+If you see `{"ok":true,"result":[]}` you haven't pressed START on your bot yet.
+
+</details>
+
+## 3. Run it
+
+```powershell
+python main.py --dry-run                # evaluate + print, sends nothing, state untouched
+python main.py                          # the real run (no-op outside NSE hours)
+python main.py --replay 2026-09-25      # walk a past session bar-by-bar: every cross
+                                         # that WOULD have fired (no sends, no state)
+python main.py --verbose                 # debug logging
+```
+
+- **First real run** records a *baseline* (current side) without alerting.
+- Exit codes: `0` ok/no-op · `1` config (e.g. missing Telegram creds) ·
+  `2` Telegram failed (state not saved → auto-retry next minute) · `3` data failed.
+- Logs: console + `nse_alerter.log` (Task Scheduler has no console).
+
+## 4. Schedule (Windows Task Scheduler — every minute, Mon–Fri, 09:14–15:35 IST)
+
+Run once in PowerShell (**fill `.env` first** — otherwise in-session runs exit 1):
+
+```powershell
+$py    = "C:\Users\deepa\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\pythonw.exe"
+$dir  = "d:\Cursor\python_for_java_devs\nse_alerter"
+$action = New-ScheduledTaskAction -Execute $py -Argument "$dir\main.py" -WorkingDirectory $dir
+$trigger = New-ScheduledTaskTrigger -Daily -At "09:14"
+# New-ScheduledTaskTrigger can't express repetition directly -> attach it to the CIM object:
+$rep = New-CimInstance -CimClass (Get-CimClass -Namespace "Root\Microsoft\Windows\TaskScheduler" -ClassName "MSFT_TaskRepetitionPattern") -ClientOnly
+$rep.Interval  = "PT1M"        # every 1 minute
+$rep.Duration  = "PT6H21M"     # 09:14 -> 15:35
+$trigger.Repetition = $rep
+Register-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Action $action -Trigger $trigger -Description "NIFTY fut 5m EMA20 cross -> Telegram" -Force
+```
+
+Outside market hours the task still fires but exits immediately (cheap no-op);
+weekends/holidays are skipped by `market_hours.py`. Check it with:
+
+```powershell
+Get-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" | Get-ScheduledTaskInfo
+Get-Content d:\Cursor\python_for_java_devs\nse_alerter\nse_alerter.log -Tail 20 -Wait
+```
+
+Remove: `Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$false`
+
+## 5. Data sources (and why two of them)
+
+| Provider | What it gives | When used |
+|---|---|---|
+| **tv** (default) | `NSE:NIFTY1!` — actual **NIFTY futures**, continuous front-month (auto-rolls at expiry), real-time for retail users | first choice in `DATA_PROVIDER=auto` |
+| **yahoo** (fallback) | `^NSEI` **spot proxy** — Yahoo has no NFO futures; basis is a few points, crosses nearly always coincide | when TradingView's unofficial feed fails (it retries ×3 first). Alerts then show `src=yahoo` |
+| **kite** (later) | your Zerodha account's real front-month futures | only if you set `DATA_PROVIDER=kite` + credentials |
+
+## 6. Enabling Zerodha Kite later
+
+The provider is **built and tested but disabled** — the free Kite "Personal"
+plan has **no market data**; you need the paid Kite Connect plan for
+historical/live candles. When ready:
+
+1. Confirm your plan at `developers.kite.trade` → *My Apps* (paid = data APIs work).
+2. Put in `.env`:
+   ```ini
+   DATA_PROVIDER=kite
+   KITE_API_KEY=your_api_key
+   KITE_ACCESS_TOKEN=...        # expires EVERY trading day
+   ```
+3. Daily token: Kite's `access_token` dies each night. Two options:
+   - **Manual (simple):** every morning run Kite's login flow in a browser
+     (or a 5-line script with `kiteconnect`) and paste the token into `.env`.
+   - **Automated:** a `kite_login.py` using `pyotp` (already in requirements)
+     + your Kite user id/password/TOTP secret — wire it as an 08:55 Task
+     Scheduler job. *(Build this when you actually enable Kite.)*
+4. The provider auto-selects the **front-month NIFTY future** from the
+   instruments file, so expiry rolls need no maintenance.
+
+Note: keep `DATA_PROVIDER=auto` if you want TradingView-first with yahoo fallback;
+`kite` is *explicit only* (no silent fallback to free feeds).
+
+## 7. Cloud deployment (GitHub Actions) — runs while your PC is OFF
+
+Implemented in **`.github/workflows/nse-alerts.yml`** (repo root): the same
+`main.py` runs on GitHub's servers **every 5 minutes during the NSE session**
+(Mon–Fri, 03:45–10:05 UTC = 09:15–15:35 IST — IST has no DST, so this never drifts).
+Private-repo budget: 77 runs/day ≈ 1,670 min/month of the free 2,000 (pip is cached).
+
+**One-time setup — add the 2 secrets** (Settings → Secrets, not in code):
+
+1. Open: `https://github.com/deepakonroll/Python_learning/settings/secrets/actions`
+2. **New repository secret** → Name `TELEGRAM_BOT_TOKEN`, Value = the token from `.env` → Save
+3. **New repository secret** → Name `TELEGRAM_CHAT_ID`, Value = `674729729` → Save
+4. First test: **Actions → nse-alerts → Run workflow** (manual button) → green check ✓
+   (it prints `test`/`baseline`/`no cross` lines in the run log)
+5. From then on the cron does everything — **you can keep the PC off.**
+
+**Disable the local Windows task once cloud is confirmed** (avoids double alerts
+on days you DO keep the PC on):
+
+```powershell
+Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$false
+# to bring it back later: re-run the Register-ScheduledTask block in §4
+```
+
+**Cloud caveats**
+
+- State (`state.json`) is kept across runs via GitHub's cache; a rare cache miss
+  self-heals as a silent baseline (worst case: one cross in that gap is skipped —
+  never a duplicate).
+- GitHub **e-mails you if the workflow fails**, and pauses scheduled runs after
+  **60 days with zero repo activity** (any push/reactivate fixes it).
+- Check usage anytime: `github.com/deepakonroll/Python_learning/actions`
+- GitHub servers run outside India → TradingView's unofficial feed fails more
+  often there, so alerts more often show `src=yahoo` (spot proxy) — set up Kite
+  (§6) for authoritative futures data if that bothers you.
+- Same pattern works for **AWS Lambda + EventBridge** (zip the package, env vars
+  in configuration, `state.json` in S3) if you ever outgrow Actions.
+
+## 8. Tests & troubleshooting
+
+```powershell
+cd d:\Cursor\python_for_java_devs\nse_alerter
+python -m pytest                # 45 tests, all offline (synthetic candles, mocked HTTP)
+```
+
+| Symptom | Fix |
+|---|---|
+| exit 1 in logs during market hours | `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` missing in `.env` |
+| `provider tv failed` warnings | TradingView's unofficial feed hiccuped — fallback to yahoo kicked in (alert will say `src=yahoo`) |
+| No messages at all | run `python main.py --test-notify`; check Telegram spam/first-contact privacy (tap *Start* on your bot) |
+| Alert repeated after restart | expected only if the side genuinely flipped back while the app was down |
+| Wrong feed in alert text | `src=` tells you: `tv`=futures, `yahoo`=spot proxy, `kite`=your Zerodha data |
+
+## 9. Roadmap / extension points
+
+- **Email / ntfy push**: add a sibling function in `nse_alerts/notify.py`
+  (SMTP via stdlib, or `POST https://ntfy.sh/<topic>`) and call it next to
+  `send_telegram` in `app.py` — ~20 lines, no other changes.
+- **Multiple symbols**: `evaluate()`/state are already keyed per symbol —
+  loop over a comma-separated `SYMBOLS` list in `app.run`.
+- **Different rule** (RSI, Supertrend, ...): implement in `signals.py`
+  returning the same `CrossEvent` shape.
+
+---
+
+*Educational tool — signals are informational, not trade advice; you are
+responsible for any trading decisions (and SEBI/RBI regulations apply to you,
+not this script).*
+

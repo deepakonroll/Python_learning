@@ -25,3 +25,8 @@ Thumbs.db
 
 # Regenerated lesson output (lesson 14 charts)
 charts/
+
+# NSE alerter runtime files (nse_alerter app)
+.env
+state.json
+*.log

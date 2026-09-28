@@ -1,0 +1,10 @@
+# Cloud (GitHub Actions) install set - slimmed: no Kite/dev tooling.
+# The kite provider lazy-imports its SDK, so its absence is fine on cloud.
+pandas>=2.2
+numpy>=1.26
+requests>=2.31
+python-dotenv>=1.0
+tzdata>=2024.1
+yfinance>=0.2.65
+tvdatafeed-enhanced>=2.2
+websocket-client>=1.9
