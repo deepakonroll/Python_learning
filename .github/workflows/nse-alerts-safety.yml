@@ -1,0 +1,51 @@
+# Safety net for nse-alerts: a SEPARATE workflow file = a second, independent
+# schedule registration (tonight's missing-morning-runs issue affects one
+# registration, this one backstops it). Cheap: 8 runs/day.
+# Same app + SAME concurrency group (repo-wide lock) + branch-shared state cache
+#  -> runs serialize with nse-alerts and share state.json, so dedupe guarantees
+#     no double alerts even when both fire at the same minute.
+name: nse-alerts-safety
+
+on:
+  schedule:
+    - cron: '45 3 * * 1-5'        # 09:15 IST - heartbeat/first check of the day
+    - cron: '30 4-9 * * 1-5'      # hourly 10:00-15:00 IST
+    - cron: '0 10 * * 1-5'        # 15:30 IST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nse-alerts               # repo-wide: shared with nse-alerts.yml
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: nse_alerter/requirements-cloud.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: nse_alerter/state.json
+          key: nse-state-${{ github.run_id }}
+          restore-keys: |
+            nse-state-
+
+      - name: Install dependencies
+        run: pip install -r nse_alerter/requirements-cloud.txt
+
+      - name: Evaluate EMA20 cross and notify
+        run: python nse_alerter/main.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          STATE_FILE: ${{ github.workspace }}/nse_alerter/state.json
