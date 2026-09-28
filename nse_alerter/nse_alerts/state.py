@@ -34,6 +34,18 @@ class StateStore:
         self.path = Path(path)
 
     def load(self) -> dict[str, SymbolState]:
+        raw = self._load_raw()
+        out: dict[str, SymbolState] = {}
+        for symbol, data in raw.items():
+            if symbol == "__control__":
+                continue                        # reserved for the enable/disable flag
+            try:
+                out[symbol] = SymbolState(**data)
+            except TypeError:
+                continue                        # unknown/extra keys - skip entry
+        return out
+
+    def _load_raw(self) -> dict:
         if not self.path.exists():
             return {}
         try:
@@ -45,22 +57,29 @@ class StateStore:
             except OSError:
                 pass
             return {}
-        out: dict[str, SymbolState] = {}
-        for symbol, data in (raw or {}).items():
-            try:
-                out[symbol] = SymbolState(**data)
-            except TypeError:
-                continue                        # unknown/extra keys - skip entry
-        return out
+        return raw if isinstance(raw, dict) else {}
+
+    def get_control(self) -> dict:
+        control = self._load_raw().get("__control__")
+        return control if isinstance(control, dict) else {}
+
+    def set_control(self, control: dict) -> None:
+        """Persist the alerts on/off flag alongside the signal state."""
+        data = self._load_raw()
+        data["__control__"] = control
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(tmp, self.path)
 
     def get(self, symbol: str) -> SymbolState | None:
         return self.load().get(symbol)
 
     def put(self, symbol: str, state: SymbolState) -> None:
         state.updated_at = datetime.now().isoformat(timespec="seconds")
-        data = self.load()
+        data = self._load_raw()                 # preserves __control__ entries
         data[symbol] = asdict(state)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        os.replace(tmp, self.path)             # atomic on the same volume
+        os.replace(tmp, self.path)              # atomic on the same volume

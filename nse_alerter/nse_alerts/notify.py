@@ -23,9 +23,12 @@ def send_telegram(
     chat_id: str,
     text: str,
     poster=requests.post,
+    reply_markup: dict | None = None,
 ) -> dict:
     url = TELEGRAM_API.format(token=token)
     payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup    # e.g. tappable command keyboard
     try:
         resp = poster(url, json=payload, timeout=TIMEOUT_SECONDS)
     except requests.RequestException as exc:

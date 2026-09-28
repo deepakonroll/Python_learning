@@ -61,3 +61,14 @@ def test_non_json_response_raises():
 def test_test_message_mentions_the_rule():
     text = ping_message("NIFTY1!", "5m", 20)
     assert "NIFTY1!" in text and "EMA20" in text and "5m" in text
+
+
+def test_reply_markup_included_when_provided():
+    captured = {}
+
+    def poster(url, json=None, timeout=None):
+        captured.update(json or {})
+        return FakeResponse()
+
+    send_telegram("t", "42", "x", poster=poster, reply_markup={"keyboard": []})
+    assert captured["reply_markup"] == {"keyboard": []}     # tappable command keys

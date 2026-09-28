@@ -14,6 +14,7 @@ import sys
 from datetime import date, datetime, time
 
 from .config import INTERVAL_MINUTES, Config, ConfigError
+from .control import process_commands
 from .market_hours import IST, in_session, now_ist
 from .notify import NotifyError, ping_message, send_telegram
 from .providers.base import DataProvider, ProviderError, completed_bars
@@ -83,13 +84,22 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         return _send_test(cfg, dry_run)
 
     now = now_ist()
-    if not dry_run and not in_session(now, cfg.holidays):
-        log.debug("outside NSE session (%s IST) - nothing to do", now.strftime("%H:%M"))
-        return 0
     if not dry_run and not (cfg.telegram_token and cfg.telegram_chat_id):
         log.error("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set - fill nse_alerter/.env "
                   "(verify with --test-notify) before enabling the schedule")
         return 1
+
+    # Owner commands (/disable /enable /status) - polled before the session gate
+    # so they answer anytime a run happens; dry runs never poll (getUpdates is a
+    # consuming read reserved for the live scheduler).
+    store = StateStore(cfg.state_file)
+    if not dry_run and not process_commands(cfg, store):
+        log.info("alerts disabled via Telegram /disable - nothing to do")
+        return 0
+
+    if not dry_run and not in_session(now, cfg.holidays):
+        log.debug("outside NSE session (%s IST) - nothing to do", now.strftime("%H:%M"))
+        return 0
 
     try:
         candles, source = fetch_candles(cfg, build_providers(cfg), now)
@@ -97,7 +107,6 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         log.error("%s", exc)
         return 3
 
-    store = StateStore(cfg.state_file)
     states = store.load()
     stored = states.get(cfg.symbol)
     prev_side = stored.last_side if stored else None

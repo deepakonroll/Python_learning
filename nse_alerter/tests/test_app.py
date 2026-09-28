@@ -35,12 +35,17 @@ class Recorder:
 
 @pytest.fixture
 def rig(monkeypatch, tmp_path):
-    """Fake clock (Monday 11:30 IST), fake provider, recorded sends."""
+    """Fake clock (Monday 13:30 IST), fake provider, recorded sends.
+
+    Command polling defaults to 'no updates' so the whole suite stays offline.
+    """
     sent = Recorder()
-    provider = FakeProvider(make_candles(falling(26)))   # 09:15..11:25, all completed
+    provider = FakeProvider(make_candles(falling(26)))   # 09:15..11:20, all completed
     monkeypatch.setattr(app, "now_ist", lambda: MONDAY)
     monkeypatch.setattr(app, "build_providers", lambda cfg: [provider])
     monkeypatch.setattr(app, "send_telegram", sent)
+    from nse_alerts import control
+    monkeypatch.setattr(control, "fetch_updates", lambda token: [])
     cfg = make_config(tmp_path)
     return cfg, provider, sent
 
@@ -145,3 +150,80 @@ def test_replay_on_day_without_bars_returns_empty(rig):
     cfg, provider, _ = rig
     provider.df = make_candles(falling(60), start="2026-09-24 09:15")
     assert app.replay(cfg, dt.date(2026, 9, 26)) == []  # Saturday: no bars
+
+
+# ── Telegram commands: /disable /enable /status (mobile control) ────────
+
+
+def _updates(text: str, chat: int = 42):
+    return [{"message": {"chat": {"id": chat}, "text": text}}]
+
+
+def test_disable_stops_fetching_and_enable_resumes(rig, monkeypatch):
+    from nse_alerts import control
+    from nse_alerts.state import StateStore
+
+    cfg, provider, _ = rig
+    replies: list[str] = []
+    monkeypatch.setattr(control, "send_telegram",
+                        lambda token, chat_id, text, **kw: replies.append(text))
+
+    assert app.run(cfg) == 0                                # baseline (fetch #1)
+    assert provider.calls == 1
+
+    monkeypatch.setattr(control, "fetch_updates",
+                        lambda token: _updates("/disable"))
+    assert app.run(cfg) == 0
+    assert provider.calls == 1                              # no market fetch
+    assert StateStore(cfg.state_file).get_control()["enabled"] is False
+    assert any("disabled" in r for r in replies)
+
+    monkeypatch.setattr(control, "fetch_updates", lambda token: [])
+    assert app.run(cfg) == 0                                # stays off silently
+    assert provider.calls == 1
+
+    monkeypatch.setattr(control, "fetch_updates",
+                        lambda token: _updates("/enable"))
+    assert app.run(cfg) == 0
+    assert provider.calls == 2                              # evaluated right away
+    assert StateStore(cfg.state_file).get_control()["enabled"] is True
+    assert any("enabled" in r for r in replies)
+
+
+def test_status_replies_but_keeps_running(rig, monkeypatch):
+    from nse_alerts import control
+
+    cfg, provider, _ = rig
+    assert app.run(cfg) == 0
+    replies: list[str] = []
+    monkeypatch.setattr(control, "send_telegram",
+                        lambda token, chat_id, text, **kw: replies.append(text))
+    monkeypatch.setattr(control, "fetch_updates",
+                        lambda token: _updates("/status"))
+    assert app.run(cfg) == 0
+    assert provider.calls == 2                              # still evaluated
+    assert replies and "Alerts" in replies[0]
+
+
+def test_command_from_another_chat_is_ignored(rig, monkeypatch):
+    from nse_alerts import control
+
+    cfg, provider, _ = rig
+    assert app.run(cfg) == 0
+    monkeypatch.setattr(control, "fetch_updates",
+                        lambda token: _updates("/disable", chat=999))
+    assert app.run(cfg) == 0
+    assert provider.calls == 2                              # not owner -> ignored
+
+
+def test_dry_run_never_polls_updates(rig, monkeypatch):
+    from nse_alerts import control
+
+    cfg, provider, _ = rig
+
+    def boom(token):                                        # pragma: no cover
+        raise AssertionError("dry-run must not consume updates")
+
+    monkeypatch.setattr(control, "fetch_updates", boom)
+    assert app.run(cfg, dry_run=True) == 0
+    assert provider.calls == 1                              # fetch ok, no send

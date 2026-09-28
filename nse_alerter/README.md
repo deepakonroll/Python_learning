@@ -92,6 +92,27 @@ python main.py --verbose                 # debug logging
   `2` Telegram failed (state not saved → auto-retry next minute) · `3` data failed.
 - Logs: console + `nse_alerter.log` (Task Scheduler has no console).
 
+### Control it from your phone (Telegram commands)
+
+The live run polls the bot chat first and honors **only your chat id**:
+
+| Send to your bot | Effect |
+|---|---|
+| `/disable` | 🛑 cloud runs stay idle (no market fetch, no alerts) until you re-enable |
+| `/enable` | ✅ resumes — even evaluates immediately on that run |
+| `/status` | 📊 on/off flag, current side, last bar & last event |
+
+A tappable keyboard with these buttons appears after your first command.
+Replies arrive within one scheduler cycle (≤5 min during market hours, or on
+the next manual "Run workflow" — polling happens before the session gate, so
+commands answer anytime a run happens). The flag persists in `state.json`
+(alongside signal state, already cached by GitHub Actions). Dry runs never
+poll `getUpdates` (it's a consuming read reserved for the live scheduler).
+
+> Note: GitHub's **mobile app cannot toggle workflows** — that's web-only.
+> These Telegram commands are the phone-first way to pause/resume; the web
+> toggle (Actions → nse-alerts → ⋯) remains for fully switching the cron off.
+
 ## 4. Schedule (Windows Task Scheduler — every minute, Mon–Fri, 09:14–15:35 IST)
 
 Run once in PowerShell (**fill `.env` first** — otherwise in-session runs exit 1):
