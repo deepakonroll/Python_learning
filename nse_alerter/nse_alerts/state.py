@@ -20,6 +20,7 @@ class SymbolState:
     last_event_side: str = ""               # "BUY" | "SELL" | ""
     last_event_bar: str = ""
     updated_at: str = ""
+    last_seen_date: str = ""                # YYYY-MM-DD of last live run (heartbeat)
     history: list[dict] = field(default_factory=list)   # rolling tail of events (log)
 
     def record_event(self, side: str, bar_iso: str) -> None:

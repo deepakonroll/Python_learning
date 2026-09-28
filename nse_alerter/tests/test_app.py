@@ -50,28 +50,49 @@ def rig(monkeypatch, tmp_path):
     return cfg, provider, sent
 
 
-def test_first_run_records_baseline_without_alerting(rig):
+def test_first_run_records_baseline_and_sends_liveness_heartbeat(rig):
     cfg, provider, sent = rig
     assert app.run(cfg) == 0
-    assert sent.messages == []                           # no alert on startup
+    assert len(sent.messages) == 1                          # heartbeat, NOT an alert
+    text = sent.messages[0][2]
+    assert "monitoring live" in text and "side=DOWN" in text
+    assert "BUY" not in text and "SELL" not in text
     state = StateStore(cfg.state_file).get(cfg.symbol)
     assert state is not None and state.last_side == "DOWN"
+    assert state.last_seen_date == "2026-09-28"
+
+
+def test_heartbeat_fires_only_once_per_trading_day(rig, monkeypatch):
+    from datetime import datetime
+    from nse_alerts.market_hours import IST
+
+    cfg, provider, sent = rig
+    assert app.run(cfg) == 0                                # day 1 -> heartbeat
+    assert app.run(cfg) == 0                                # same day -> silent
+    assert len(sent.messages) == 1
+
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 9, 29, 13, 30, tzinfo=IST))  # Tuesday
+    assert app.run(cfg) == 0                                # new day -> heartbeat
+    assert len(sent.messages) == 2
+    assert "29 Sep 2026" in sent.messages[1][2]
 
 
 def test_cross_sends_exactly_once_then_dedupes(rig):
     cfg, provider, sent = rig
-    assert app.run(cfg) == 0                             # baseline: DOWN
-    assert sent.messages == []
+    assert app.run(cfg) == 0                             # baseline: DOWN + heartbeat
+    assert len(sent.messages) == 1
+    assert "monitoring live" in sent.messages[0][2]
 
     provider.df = make_candles(falling(26) + rising(26))  # side flips to UP
     assert app.run(cfg) == 0
-    assert len(sent.messages) == 1
-    token, chat_id, text = sent.messages[0]
+    assert len(sent.messages) == 2                           # heartbeat + BUY
+    token, chat_id, text = sent.messages[1]
     assert token == "test-token" and chat_id == "42"
     assert "BUY" in text and "EMA20" in text
 
     assert app.run(cfg) == 0                             # same data again
-    assert len(sent.messages) == 1                       # still just one send
+    assert len(sent.messages) == 2                       # still just the two
     state = StateStore(cfg.state_file).get(cfg.symbol)
     assert state.last_side == "UP"
     assert state.last_event_side == "BUY"
@@ -79,12 +100,13 @@ def test_cross_sends_exactly_once_then_dedupes(rig):
 
 def test_dry_run_never_sends_or_writes_state(rig):
     cfg, provider, sent = rig
-    assert app.run(cfg) == 0                             # baseline written
+    assert app.run(cfg) == 0                             # baseline (heartbeat sent)
+    sent_count = len(sent.messages)
     before = cfg.state_file.read_text(encoding="utf-8")
 
     provider.df = make_candles(falling(26) + rising(26))  # would cross
     assert app.run(cfg, dry_run=True) == 0
-    assert sent.messages == []
+    assert len(sent.messages) == sent_count                 # dry-run: zero new sends
     assert cfg.state_file.read_text(encoding="utf-8") == before
 
 

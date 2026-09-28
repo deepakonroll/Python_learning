@@ -1,14 +1,14 @@
 # Runs the SAME nse_alerter app on GitHub's servers - your PC can stay off.
 # Cron is UTC; NSE = IST (no DST) -> session 09:15-15:35 IST = 03:45-10:05 UTC.
-# Three tight windows keep us well inside the private-repo free 2,000 min/month:
-#   03:45-03:55, 04:00-09:55, 10:00-10:05  (every 5 min, Mon-Fri) = 77 runs/day
+# Simple, widely-supported syntax only (minute lists + one */5 hour range):
+#   09:15-09:25, 09:30-15:25, 15:30-15:35 IST every 5 min, Mon-Fri = 77 runs/day
 name: nse-alerts
 
 on:
   schedule:
-    - cron: '45-59/5 3 * * 1-5'
+    - cron: '45,50,55 3 * * 1-5'
     - cron: '*/5 4-9 * * 1-5'
-    - cron: '0-5/5 10 * * 1-5'
+    - cron: '0,5 10 * * 1-5'
   workflow_dispatch:            # manual "Run workflow" button for testing
 
 permissions:

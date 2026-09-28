@@ -132,13 +132,18 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         else:
             log.info("no cross - %s side=%s bar=%s", cfg.symbol, current_side, bar_iso)
         if not dry_run:
+            today = now.date().isoformat()
+            new_day = stored is None or stored.last_seen_date != today
             store.put(cfg.symbol, SymbolState(
                 last_side=current_side,
                 last_processed_bar=bar_iso,
                 last_event_side=stored.last_event_side if stored else "",
                 last_event_bar=stored.last_event_bar if stored else "",
                 history=stored.history if stored else [],
+                last_seen_date=today,
             ))
+            if new_day:
+                _heartbeat(cfg, current_side, bar_iso, source)   # once per trading day
         return 0
 
     text = event.message()
@@ -156,6 +161,7 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     state = stored or SymbolState(last_side=current_side)
     state.last_side = current_side
     state.last_processed_bar = bar_iso
+    state.last_seen_date = now.date().isoformat()   # the alert itself proves liveness
     state.record_event(event.side, event.bar_time.isoformat())
     store.put(cfg.symbol, state)
     log.info("sent %s alert for %s (bar %s)",
@@ -179,6 +185,19 @@ def _send_test(cfg: Config, dry_run: bool) -> int:
         return 2
     log.info("test message delivered - check your Telegram")
     return 0
+
+
+def _heartbeat(cfg: Config, side: str, bar_iso: str, source: str) -> None:
+    """One liveness ping per trading day (and on the very first run), so a
+    silent pipeline is impossible to miss. Failures never affect alerts."""
+    if not (cfg.telegram_token and cfg.telegram_chat_id):
+        return
+    text = (f"🔎 monitoring live · {now_ist():%d %b %Y}\n"
+            f"{cfg.symbol} side={side} · last bar {bar_iso} · src={source}")
+    try:
+        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+    except NotifyError as exc:
+        log.warning("heartbeat failed (alerts unaffected): %s", exc)
 
 
 def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:

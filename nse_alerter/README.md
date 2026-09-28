@@ -88,6 +88,9 @@ python main.py --verbose                 # debug logging
 ```
 
 - **First real run** records a *baseline* (current side) without alerting.
+- **Daily liveness heartbeat**: the first successful run each trading day sends
+  `🔎 monitoring live · <date> · side=…` — if it's missing by ~09:25 IST, the
+  scheduler itself is down (check the Actions page).
 - Exit codes: `0` ok/no-op · `1` config (e.g. missing Telegram creds) ·
   `2` Telegram failed (state not saved → auto-retry next minute) · `3` data failed.
 - Logs: console + `nse_alerter.log` (Task Scheduler has no console).
