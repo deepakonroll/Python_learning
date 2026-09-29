@@ -1,14 +1,15 @@
 # Runs the SAME nse_alerter app on GitHub's servers - your PC can stay off.
-# Cron is UTC; NSE = IST (no DST) -> session 09:15-15:35 IST = 03:45-10:05 UTC.
-# Simple, widely-supported syntax only (minute lists + one */5 hour range):
-#   09:15-09:25, 09:30-15:25, 15:30-15:35 IST every 5 min, Mon-Fri = 77 runs/day
+# Cron is UTC; IST has no DST -> sessions: MCX 09:00-23:35, NSE 09:15-15:35 IST.
+# Simple syntax only (minute lists + one */5 hour range), Mon-Fri:
+#   09:00-09:25, 09:30-23:25, 23:30-23:35 IST every 5 min = ~176 runs/day
+# (free minutes: make the repo PUBLIC for unlimited Actions minutes)
 name: nse-alerts
 
 on:
   schedule:
-    - cron: '45,50,55 3 * * 1-5'
-    - cron: '*/5 4-9 * * 1-5'
-    - cron: '0,5 10 * * 1-5'
+    - cron: '30,35,40,45,50,55 3 * * 1-5'   # 09:00-09:25 IST (MCX open)
+    - cron: '*/5 4-17 * * 1-5'              # 09:30-23:25 IST (NSE + MCX)
+    - cron: '0,5 18 * * 1-5'                # 23:30-23:35 IST (MCX close grace)
   workflow_dispatch:            # manual "Run workflow" button for testing
 
 permissions:
@@ -53,3 +54,5 @@ jobs:
           # Toggle strategies from repo Settings > Secrets and variables >
           # Actions > Variables: STRATEGY = qqe | ema20 | both (default qqe)
           STRATEGY: ${{ vars.STRATEGY || 'qqe' }}
+          # Watch list (comma list, optional >yahoo-proxy, default all three):
+          SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!,MCX:CRUDEOIL,MCX:NATURALGAS' }}

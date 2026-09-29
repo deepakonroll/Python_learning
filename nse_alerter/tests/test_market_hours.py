@@ -44,3 +44,26 @@ def test_now_ist_is_aware_and_in_ist_zone():
     now = now_ist()
     assert now.tzinfo is not None
     assert now.utcoffset().total_seconds() == 5.5 * 3600
+
+
+# --- MCX (energy session 09:00-23:35 IST, same Mon-Fri rule) -----------------
+
+def test_mcx_session_window():
+    assert in_session(dt(2026, 9, 28, 9, 0), exchange="MCX")    # open exact
+    assert not in_session(dt(2026, 9, 28, 8, 59), exchange="MCX")
+    assert in_session(dt(2026, 9, 28, 20, 0), exchange="MCX")   # evening
+    assert not in_session(dt(2026, 9, 28, 20, 0))               # NSE closed there
+    assert in_session(dt(2026, 9, 28, 23, 35), exchange="MCX")  # grace
+    assert not in_session(dt(2026, 9, 28, 23, 36), exchange="MCX")
+    assert not in_session(dt(2026, 9, 27, 12, 0), exchange="MCX")  # Sunday
+
+
+def test_mcx_open_before_nse_open():
+    t = dt(2026, 9, 28, 9, 5)      # 09:05-09:14: crude trades, NIFTY not yet
+    assert in_session(t, exchange="MCX")
+    assert not in_session(t)
+
+
+def test_unknown_exchange_falls_back_to_nse_session():
+    assert not in_session(dt(2026, 9, 28, 20, 0), exchange="BSE")
+    assert in_session(dt(2026, 9, 28, 10, 0), exchange="bse")   # case-insensitive

@@ -24,6 +24,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="send a Telegram test message and exit")
     parser.add_argument("--replay", metavar="YYYY-MM-DD", default=None,
                         help="print every cross that fired on a past session (no sends)")
+    parser.add_argument("--symbol", metavar="SYM[>PROXY]", default=None,
+                        help="scan just this watch, ignoring SYMBOLS: NIFTY1! | "
+                             "MCX:CRUDEOIL | 'MCX:CRUDEOIL>BZ=F' (quote > in shells)")
     parser.add_argument("--verbose", "-v", action="store_true", help="debug logging")
     parser.add_argument("--once", action="store_true",
                         help="(default behaviour) single evaluation per invocation")
@@ -37,6 +40,17 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 1
+    if args.symbol:
+        from dataclasses import replace
+
+        from nse_alerts.config import parse_watches
+        try:
+            watches = parse_watches(args.symbol)
+        except ConfigError as exc:
+            print(f"config error: {exc}", file=sys.stderr)
+            return 1
+        cfg = replace(cfg, watches=watches, symbol=watches[0].label,
+                      yahoo_symbol=watches[0].yahoo_symbol or cfg.yahoo_symbol)
     if args.replay:
         from datetime import date as _date
         from nse_alerts.app import replay

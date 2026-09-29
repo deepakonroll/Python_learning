@@ -39,8 +39,12 @@ def rising(n: int = 60, start: float = 82.0, step: float = 1.2) -> list[float]:
 
 
 def make_config(tmp_path, **overrides) -> Config:
+    from nse_alerts.config import Watch
+    nifty = Watch(key="NIFTY1!", label="NIFTY1!", exchange="NSE",
+                  tv_symbol="NIFTY1!", yahoo_symbol="^NSEI")
     values: dict = dict(
         symbol="NIFTY1!",
+        watches=(nifty,),
         yahoo_symbol="^NSEI",
         interval="5m",
         ema_len=20,

@@ -1,4 +1,15 @@
-# NSE Alerter — NIFTY Futures 5m Signals → Telegram
+# Futures 5m Alerter — NIFTY (NSE) + Crude / Natural Gas (MCX) → Telegram
+
+**Instruments (`SYMBOLS=`, comma list — default watches all three):**
+
+| Watch | Exchange | Session (IST, Mon–Fri) | Data source |
+|---|---|---|---|
+| `NIFTY1!` — NIFTY futures | NSE | 09:15–15:35 | TradingView → `^NSEI` yahoo proxy |
+| `MCX:CRUDEOIL` — crude oil futures | MCX | 09:00–23:35 | yahoo `BZ=F` (Brent) — MCX is blocked for anonymous TV |
+| `MCX:NATURALGAS` — natural gas futures | MCX | 09:00–23:35 | yahoo `NG=F` (Henry Hub) — same reason |
+
+QQE is RSI-scale based, so Brent/Henry-Hub proxies track MCX closely even
+though prices differ (USD vs INR). Exact MCX contracts come later via Kite (§6).
 
 **Strategies (toggle via `STRATEGY=`, no code changes):**
 
@@ -22,12 +33,12 @@ nse_alerter/
 ├── nse_alerts/           # the package
 │   ├── app.py            # gate → fetch → evaluate → dedupe → send → save
 │   ├── signals.py        # EMA20 cross engine (the rule)
-│   ├── market_hours.py   # NSE 09:15–15:35 IST, Mon–Fri (+holiday list)
+│   ├── market_hours.py   # NSE 09:15–15:35 + MCX 09:00–23:35 IST, Mon–Fri
 │   ├── state.py          # JSON state store (exactly-once alerts)
 │   ├── notify.py         # Telegram sender
 │   ├── config.py         # env-driven config
 │   └── providers/        # tv (TradingView futures) → yahoo (spot proxy) → kite (later)
-└── tests/                # 45 offline tests: `python -m pytest`
+└── tests/                # 91 offline tests: `python -m pytest`
 ```
 
 ## 1. Install
@@ -157,9 +168,9 @@ Remove: `Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$fa
 
 | Provider | What it gives | When used |
 |---|---|---|
-| **tv** (default) | `NSE:NIFTY1!` — actual **NIFTY futures**, continuous front-month (auto-rolls at expiry), real-time for retail users | first choice in `DATA_PROVIDER=auto` |
-| **yahoo** (fallback) | `^NSEI` **spot proxy** — Yahoo has no NFO futures; basis is a few points, crosses nearly always coincide | when TradingView's unofficial feed fails (it retries ×3 first). Alerts then show `src=yahoo` |
-| **kite** (later) | your Zerodha account's real front-month futures | only if you set `DATA_PROVIDER=kite` + credentials |
+| **tv** (default for NSE) | `NSE:NIFTY1!` — actual **NIFTY futures**, continuous front-month (auto-rolls at expiry), real-time for retail users | first choice in `DATA_PROVIDER=auto` for NSE watches |
+| **yahoo** (fallback for NSE, **primary for MCX**) | `^NSEI` spot proxy for NIFTY; `BZ=F` Brent + `NG=F` Henry Hub for crude/natgas | TradingView's unofficial API **rejects MCX for anonymous sessions** (verified), so MCX watches go yahoo-first. Alerts show `src=yahoo` |
+| **kite** (later) | your Zerodha account's real front-month futures — **exact MCX INR contracts too** | only if you set `DATA_PROVIDER=kite` + credentials |
 
 ## 6. Enabling Zerodha Kite later
 
@@ -189,9 +200,15 @@ Note: keep `DATA_PROVIDER=auto` if you want TradingView-first with yahoo fallbac
 ## 7. Cloud deployment (GitHub Actions) — runs while your PC is OFF
 
 Implemented in **`.github/workflows/nse-alerts.yml`** (repo root): the same
-`main.py` runs on GitHub's servers **every 5 minutes during the NSE session**
-(Mon–Fri, 03:45–10:05 UTC = 09:15–15:35 IST — IST has no DST, so this never drifts).
-Private-repo budget: 77 runs/day ≈ 1,670 min/month of the free 2,000 (pip is cached).
+`main.py` runs on GitHub's servers **every 5 minutes across BOTH sessions**
+(Mon–Fri, 03:30–18:05 UTC = 09:00–23:35 IST — IST has no DST, so this never
+drifts; NSE-only hours are skipped by the per-exchange gate). ~176 runs/day
+⇒ **make the repo PUBLIC** (Settings → Danger Zone → Change visibility) for
+unlimited free Actions minutes; on a private repo the free 2,000 min/month
+would last only ~11 days. Secrets stay hidden in Actions Secrets either way.
+
+Watch list override: repo **Variables → `SYMBOLS`** (e.g. `NIFTY1!` alone),
+else the default `NIFTY1!,MCX:CRUDEOIL,MCX:NATURALGAS`.
 
 **One-time setup — add the 2 secrets** (Settings → Secrets, not in code):
 

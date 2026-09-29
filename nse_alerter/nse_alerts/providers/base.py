@@ -13,7 +13,7 @@ from typing import Protocol
 
 import pandas as pd
 
-from ..market_hours import NSE_CLOSE, NSE_OPEN
+from ..market_hours import session_bounds
 
 CANONICAL = ["Open", "High", "Low", "Close", "Volume"]
 
@@ -60,13 +60,14 @@ def normalize_candles(df: pd.DataFrame, *, assume_tz: str = "Asia/Kolkata") -> p
     return df[CANONICAL]
 
 
-def filter_session(candles: pd.DataFrame) -> pd.DataFrame:
-    """Keep bars that start inside the NSE session (09:15 <= t < 15:30 IST).
+def filter_session(candles: pd.DataFrame, exchange: str = "NSE") -> pd.DataFrame:
+    """Keep bars that start inside the exchange's session (open <= t < close).
 
-    TradingView occasionally returns bars stamped 15:30/15:35 - dropped here.
+    TradingView occasionally returns stamps past the close - dropped here.
     """
+    open_t, close_t, _grace = session_bounds(exchange)
     times = candles.index.time
-    mask = (times >= NSE_OPEN) & (times < NSE_CLOSE)
+    mask = (times >= open_t) & (times < close_t)
     out = candles[mask]
     return out if not out.empty else candles          # daily bars pass through
 

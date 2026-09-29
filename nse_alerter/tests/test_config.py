@@ -9,7 +9,7 @@ from tests.conftest import make_config
 
 def _load(monkeypatch, **env):
     monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: None)
-    for key in ("STRATEGY", "QQE_RSI_PERIOD", "QQE_SF", "QQE_FACTOR"):
+    for key in ("STRATEGY", "QQE_RSI_PERIOD", "QQE_SF", "QQE_FACTOR", "SYMBOLS"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -44,3 +44,37 @@ def test_qqe_params_overridable(monkeypatch):
 def test_state_keys_are_per_strategy():
     cfg = make_config(Path_tmp := __import__("pathlib").Path("."), strategy="both")
     assert cfg.active_strategies() == ["ema20", "qqe"]
+
+
+# --- SYMBOLS watch list -------------------------------------------------------
+
+def test_default_symbols_is_nifty_plus_mcx_pair(monkeypatch):
+    cfg = _load(monkeypatch)
+    assert [w.key for w in cfg.watches] == ["NIFTY1!", "MCX:CRUDEOIL", "MCX:NATURALGAS"]
+    assert cfg.symbol == "NIFTY1!"                     # primary = first watch
+    assert cfg.yahoo_symbol == "^NSEI"
+    assert cfg.watches[1].exchange == "MCX"
+    assert cfg.watches[1].yahoo_symbol == "BZ=F"        # Brent proxy built in
+    assert cfg.watches[2].yahoo_symbol == "NG=F"        # Henry Hub proxy
+
+
+def test_symbols_env_overrides(monkeypatch):
+    cfg = _load(monkeypatch, SYMBOLS="NIFTY1!")
+    assert [w.key for w in cfg.watches] == ["NIFTY1!"]
+
+
+def test_parse_watches_explicit_forms():
+    from nse_alerts.config import parse_watches
+
+    ws = parse_watches(" NIFTY1!>^NSEI , MCX:GOLD>GC=F ")
+    assert ws[0].key == "NIFTY1!" and ws[0].exchange == "NSE"
+    assert ws[0].yahoo_symbol == "^NSEI"
+    assert ws[1].key == "MCX:GOLD" and ws[1].exchange == "MCX"
+    assert ws[1].yahoo_symbol == "GC=F" and ws[1].label == "GOLD"
+
+
+def test_parse_watches_unknown_bare_symbol_rejected():
+    from nse_alerts.config import parse_watches
+
+    with pytest.raises(ConfigError, match="EXCHANGE:SYMBOL"):
+        parse_watches("BANANA1!")

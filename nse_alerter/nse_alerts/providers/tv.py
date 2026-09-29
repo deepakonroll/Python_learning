@@ -15,7 +15,7 @@ import time as _time
 import pandas as pd
 
 from ..config import INTERVAL_MINUTES
-from .base import ProviderError, filter_session, normalize_candles
+from .base import ProviderError, normalize_candles
 
 # our interval key -> tvDatafeed Interval member name
 _TV_INTERVAL = {
@@ -70,10 +70,9 @@ class TvProvider:
                 )
                 if raw is None or raw.empty:
                     raise ProviderError("tvDatafeed returned no data")
-                candles = normalize_candles(raw)
-                candles = filter_session(candles)
+                candles = normalize_candles(raw)   # session filter: app.fetch_candles
                 if len(candles) < INTERVAL_MINUTES[interval]:
-                    raise ProviderError(f"only {len(candles)} session bars returned")
+                    raise ProviderError(f"only {len(candles)} rows returned")
                 return candles
             except ProviderError as exc:
                 last_error = exc

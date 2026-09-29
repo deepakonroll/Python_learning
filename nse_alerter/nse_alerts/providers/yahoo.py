@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .base import ProviderError, filter_session, normalize_candles
+from .base import ProviderError, normalize_candles
 
 # interval -> yfinance period (Yahoo caps intraday history: 5m/15m ~60d, 1m ~7d)
 _PERIOD = {"1m": "5d", "5m": "10d", "15m": "10d", "30m": "60d", "1h": "60d", "1d": "1y"}
@@ -40,5 +40,4 @@ class YahooProvider:
             raise ProviderError(f"yfinance returned no rows for {symbol}")
 
         candles = normalize_candles(raw)
-        candles = filter_session(candles)
         return candles.tail(max(lookback, 30))

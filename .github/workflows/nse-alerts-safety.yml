@@ -1,6 +1,6 @@
 # Safety net for nse-alerts: a SEPARATE workflow file = a second, independent
-# schedule registration (tonight's missing-morning-runs issue affects one
-# registration, this one backstops it). Cheap: 8 runs/day.
+# schedule registration (missing-morning-runs issue affects one registration,
+# this one backstops it). Hourly across BOTH sessions: ~16 runs/day.
 # Same app + SAME concurrency group (repo-wide lock) + branch-shared state cache
 #  -> runs serialize with nse-alerts and share state.json, so dedupe guarantees
 #     no double alerts even when both fire at the same minute.
@@ -8,9 +8,7 @@ name: nse-alerts-safety
 
 on:
   schedule:
-    - cron: '45 3 * * 1-5'        # 09:15 IST - heartbeat/first check of the day
-    - cron: '30 4-9 * * 1-5'      # hourly 10:00-15:00 IST
-    - cron: '0 10 * * 1-5'        # 15:30 IST
+    - cron: '15 3-18 * * 1-5'      # hourly 08:45-23:45 IST (NSE + MCX)
   workflow_dispatch:
 
 permissions:
@@ -50,3 +48,4 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           STATE_FILE: ${{ github.workspace }}/nse_alerter/state.json
           STRATEGY: ${{ vars.STRATEGY || 'qqe' }}
+          SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!,MCX:CRUDEOIL,MCX:NATURALGAS' }}

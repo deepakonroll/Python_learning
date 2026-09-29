@@ -15,9 +15,9 @@ from datetime import date, datetime, time
 
 from .config import INTERVAL_MINUTES, Config, ConfigError
 from .control import effective_strategy, process_commands
-from .market_hours import IST, in_session, now_ist
+from .market_hours import IST, in_session, now_ist, session_bounds
 from .notify import KEYBOARD, NotifyError, ping_message, send_telegram
-from .providers.base import DataProvider, ProviderError, completed_bars
+from .providers.base import DataProvider, ProviderError, completed_bars, filter_session
 from .providers.kite import KiteProvider
 from .providers.tv import TvProvider
 from .providers.yahoo import YahooProvider
@@ -40,28 +40,48 @@ def configure_logging(verbose: bool = False, log_file=None) -> None:
     )
 
 
-def build_providers(cfg: Config) -> list[DataProvider]:
-    """Ordered fallback chain. auto = TradingView futures -> yfinance spot."""
+def build_providers(cfg: Config, watch) -> list[DataProvider]:
+    """Ordered fallback chain per watch. auto = TradingView -> yahoo proxy."""
     if cfg.data_provider == "auto":
-        return [TvProvider(), YahooProvider()]        # type: ignore[list-item]
+        tv: list[DataProvider] = [TvProvider()]              # type: ignore[list-item]
+        yahoo: list[DataProvider] = ([YahooProvider()]       # type: ignore[list-item]
+                                     if watch.yahoo_symbol else [])
+        # MCX: anonymous TV access is blocked for MCX, so the free yahoo proxy
+        # leads there; NSE keeps TradingView futures as primary.
+        return yahoo + tv if watch.exchange == "MCX" else tv + yahoo
     if cfg.data_provider == "tv":
-        return [TvProvider()]                         # type: ignore[list-item]
+        return [TvProvider()]                                # type: ignore[list-item]
     if cfg.data_provider == "yahoo":
-        return [YahooProvider()]                      # type: ignore[list-item]
+        if not watch.yahoo_symbol:
+            raise ConfigError(f"no yahoo proxy configured for {watch.key}")
+        return [YahooProvider()]                             # type: ignore[list-item]
     if cfg.data_provider == "kite":
         return [KiteProvider(cfg.kite_api_key, cfg.kite_access_token)]
     raise ConfigError(f"unknown DATA_PROVIDER {cfg.data_provider!r}")
 
 
-def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime):
-    """Try each provider in order; returns (candles, provider_name)."""
+def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
+                  watch, lookback: int | None = None):
+    """Try each provider in order for this watch; returns (candles, name).
+
+    Session filtering is centralized here (exchange-aware): each provider
+    returns raw normalized candles, we keep only bars inside the watch's
+    session window and drop the still-forming bar.
+
+    lookback: bar budget (defaults to cfg.lookback_bars; replay passes a big
+    number so past dates aren't truncated by the recent-bars tail).
+    """
     naive_now = now.astimezone(IST).replace(tzinfo=None) if now.tzinfo else now
+    budget = lookback or cfg.lookback_bars
     errors: list[str] = []
     for provider in providers:
-        # yahoo always reads the configured spot proxy, others read SYMBOL
-        symbol = cfg.yahoo_symbol if provider.name == "yahoo" else cfg.symbol
+        # yahoo reads the watch's proxy symbol; others read the watch symbol
+        symbol = watch.yahoo_symbol if provider.name == "yahoo" else watch.tv_symbol
+        if provider.name == "yahoo" and not symbol:
+            continue
         try:
-            candles = provider.fetch(symbol, cfg.interval, cfg.lookback_bars)
+            candles = provider.fetch(symbol, cfg.interval, budget)
+            candles = filter_session(candles, watch.exchange)
             candles = completed_bars(candles, INTERVAL_MINUTES[cfg.interval], naive_now)
             if len(candles) < cfg.ema_len + 2:
                 raise ProviderError(
@@ -72,8 +92,9 @@ def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime):
             return candles, provider.name
         except ProviderError as exc:
             errors.append(f"{provider.name}: {exc}")
-            log.warning("provider %s failed -> %s", provider.name, exc)
-    raise ProviderError("all providers failed: " + " | ".join(errors))
+            log.warning("provider %s failed for %s -> %s",
+                        provider.name, watch.key, exc)
+    raise ProviderError(f"all providers failed for {watch.key}: " + " | ".join(errors))
 
 
 def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
@@ -99,90 +120,106 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
 
     # Telegram /strategy override beats env/default - mobile-first switching
     effective = effective_strategy(cfg, store)
-
-    if not dry_run and not in_session(now, cfg.holidays):
-        log.debug("outside NSE session (%s IST) - nothing to do", now.strftime("%H:%M"))
-        return 0
-
-    try:
-        candles, source = fetch_candles(cfg, build_providers(cfg), now)
-    except ProviderError as exc:
-        log.error("%s", exc)
-        return 3
+    strategies = ["ema20", "qqe"] if effective == "both" else [effective]
+    log.debug("effective strategy: %s (watches: %s)",
+              effective, ", ".join(w.key for w in cfg.watches))
 
     states = store.load()
-    bar_iso = candles.index[-1].isoformat()
     today = now.date().isoformat()
-    # one engine, or both when the effective strategy is 'both'
-    strategies = ["ema20", "qqe"] if effective == "both" else [effective]
-    log.debug("effective strategy: %s", effective)
+    ok = failed = 0
 
-    for index, strat in enumerate(strategies):
-        # dedicated state key per strategy so toggling never mixes baselines
-        key = cfg.symbol if strat == "ema20" else f"{cfg.symbol}#{strat}"
-        stored = states.get(key)
-        prev_side = stored.last_side if stored else None
-        try:
-            event, current_side = evaluate(
-                candles,
-                symbol=cfg.symbol,
-                ema_len=cfg.ema_len,
-                prev_side=prev_side,
-                source=source,
-                strategy=strat,
-                rsi_period=cfg.qqe_rsi_period,
-                sf=cfg.qqe_sf,
-                factor=cfg.qqe_factor,
-            )
-        except SignalError as exc:
-            log.error("signal evaluation failed (%s): %s", strat, exc)
-            return 3
-
-        if event is None:
-            if stored is None:
-                log.info("baseline%s: %s [%s] side=%s (no alert on first run)",
-                         " (dry-run, not saved)" if dry_run else "",
-                         key, strat, current_side)
-            else:
-                log.info("no cross - %s [%s] side=%s bar=%s",
-                         key, strat, current_side, bar_iso)
-            if not dry_run:
-                new_day = stored is None or stored.last_seen_date != today
-                store.put(key, SymbolState(
-                    last_side=current_side,
-                    last_processed_bar=bar_iso,
-                    last_event_side=stored.last_event_side if stored else "",
-                    last_event_bar=stored.last_event_bar if stored else "",
-                    history=stored.history if stored else [],
-                    last_seen_date=today,
-                ))
-                if new_day and index == 0:
-                    _heartbeat(cfg, current_side, bar_iso, source,
-                               effective)     # once/day, labels the mode
+    for watch in cfg.watches:
+        if not dry_run and not in_session(now, cfg.holidays, watch.exchange):
+            log.debug("outside %s session for %s (%s IST)",
+                      watch.exchange, watch.key, now.strftime("%H:%M"))
             continue
-
-        text = event.message()
-        if dry_run:
-            log.info("[dry-run] would send:\n%s", text)
-            continue
-
         try:
-            assert cfg.telegram_token and cfg.telegram_chat_id   # guarded above
-            send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text,
-                          reply_markup=KEYBOARD)
-        except NotifyError as exc:
-            log.error("telegram send failed (%s, will retry next run): %s",
-                      strat, exc)
-            return 2                       # state untouched -> retried next run
+            candles, source = fetch_candles(
+                cfg, build_providers(cfg, watch), now, watch)
+        except ProviderError as exc:
+            log.error("%s -> skipped this run", exc)
+            failed += 1
+            continue
+        bar_iso = candles.index[-1].isoformat()
+        watch_ok = False
+        for index, strat in enumerate(strategies):
+            # dedicated state key per (watch, strategy) so toggling never mixes
+            key = watch.key if strat == "ema20" else f"{watch.key}#{strat}"
+            stored = states.get(key)
+            prev_side = stored.last_side if stored else None
+            try:
+                event, current_side = evaluate(
+                    candles,
+                    symbol=watch.key,
+                    ema_len=cfg.ema_len,
+                    prev_side=prev_side,
+                    source=source,
+                    strategy=strat,
+                    rsi_period=cfg.qqe_rsi_period,
+                    sf=cfg.qqe_sf,
+                    factor=cfg.qqe_factor,
+                )
+            except SignalError as exc:
+                log.error("signal evaluation failed (%s, %s): %s",
+                          watch.key, strat, exc)
+                break                               # counts as failed below
+            watch_ok = True
 
-        state = stored or SymbolState(last_side=current_side)
-        state.last_side = current_side
-        state.last_processed_bar = bar_iso
-        state.last_seen_date = today        # the alert itself proves liveness
-        state.record_event(event.side, event.bar_time.isoformat())
-        store.put(key, state)
-        log.info("sent %s alert [%s] for %s (bar %s)",
-                 event.side, strat, cfg.symbol, event.bar_time.strftime("%H:%M"))
+            if event is None:
+                if stored is None:
+                    log.info("baseline%s: %s [%s] side=%s (no alert on first run)",
+                             " (dry-run, not saved)" if dry_run else "",
+                             key, strat, current_side)
+                else:
+                    log.info("no cross - %s [%s] side=%s bar=%s",
+                             key, strat, current_side, bar_iso)
+                if not dry_run:
+                    new_day = stored is None or stored.last_seen_date != today
+                    store.put(key, SymbolState(
+                        last_side=current_side,
+                        last_processed_bar=bar_iso,
+                        last_event_side=stored.last_event_side if stored else "",
+                        last_event_bar=stored.last_event_bar if stored else "",
+                        history=stored.history if stored else [],
+                        last_seen_date=today,
+                    ))
+                    if new_day and index == 0:
+                        _heartbeat(cfg, current_side, bar_iso, source,
+                                   effective, watch.key)   # once/day per watch
+                continue
+
+            text = event.message()
+            if dry_run:
+                log.info("[dry-run] would send:\n%s", text)
+                continue
+
+            try:
+                assert cfg.telegram_token and cfg.telegram_chat_id  # guarded above
+                send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text,
+                              reply_markup=KEYBOARD)
+            except NotifyError as exc:
+                log.error("telegram send failed (%s, will retry next run): %s",
+                          watch.key, exc)
+                return 2                   # that state untouched -> retried
+
+            state = stored or SymbolState(last_side=current_side)
+            state.last_side = current_side
+            state.last_processed_bar = bar_iso
+            state.last_seen_date = today    # the alert itself proves liveness
+            state.record_event(event.side, event.bar_time.isoformat())
+            store.put(key, state)
+            log.info("sent %s alert [%s] for %s (bar %s)",
+                     event.side, strat, watch.key,
+                     event.bar_time.strftime("%H:%M"))
+
+        if watch_ok:
+            ok += 1
+        else:
+            failed += 1
+
+    if ok == 0 and failed > 0:
+        log.error("no watch could be evaluated this run (%d failed)", failed)
+        return 3
     return 0
 
 
@@ -206,13 +243,15 @@ def _send_test(cfg: Config, dry_run: bool) -> int:
 
 
 def _heartbeat(cfg: Config, side: str, bar_iso: str, source: str,
-               strategy_label: str | None = None) -> None:
-    """One liveness ping per trading day (and on the very first run), so a
-    silent pipeline is impossible to miss. Failures never affect alerts."""
+               strategy_label: str | None = None,
+               symbol: str | None = None) -> None:
+    """One liveness ping per day per watch (and on the watch's first run), so
+    a silent feed is impossible to miss. Failures never affect alerts."""
     if not (cfg.telegram_token and cfg.telegram_chat_id):
         return
     text = (f"🔎 monitoring live · {now_ist():%d %b %Y}\n"
-            f"{cfg.symbol} side={side} · rule={strategy_label or cfg.strategy} · "
+            f"{symbol or cfg.symbol} side={side} · "
+            f"rule={strategy_label or cfg.strategy} · "
             f"last bar {bar_iso} · src={source}")
     try:
         send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text,
@@ -229,9 +268,13 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
     is what you'd have been alerted on.
     """
     configure_logging(verbose, cfg.log_file)
-    cutoff = datetime.combine(target, time(15, 35))     # everything that day is closed
+    watch = cfg.watches[0]
+    # cutoff = that day's session grace-end, so every bar that day is closed
+    cutoff = datetime.combine(target, session_bounds(watch.exchange)[2])
     try:
-        candles, source = fetch_candles(cfg, build_providers(cfg), cutoff)
+        # big lookback: replay needs the past date inside the fetched window
+        candles, source = fetch_candles(cfg, build_providers(cfg, watch),
+                                        cutoff, watch, lookback=5000)
     except ProviderError as exc:
         print(f"replay: no data ({exc})")
         return []
@@ -247,7 +290,7 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
     eff = effective_strategy(cfg, StateStore(cfg.state_file))
     strat = "ema20" if eff == "both" else eff       # replay walks the primary engine
     label = STRATEGY_LABELS.get(strat, strat)
-    print(f"Replay {cfg.symbol} · {target.isoformat()} · {cfg.interval} "
+    print(f"Replay {watch.key} · {target.isoformat()} · {cfg.interval} "
           f"{label} · feed={source} · {len(day_bars)} bars that day"
           + ("  [strategy=both -> showing ema20]" if eff == "both" else ""))
     if len(pre) < (cfg.ema_len + 2 if strat == "ema20" else 72):
@@ -255,7 +298,7 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
               f"try DATA_PROVIDER=yahoo (deeper history)")
         return []
 
-    kwargs = dict(symbol=cfg.symbol, ema_len=cfg.ema_len, strategy=strat,
+    kwargs = dict(symbol=watch.key, ema_len=cfg.ema_len, strategy=strat,
                   rsi_period=cfg.qqe_rsi_period, sf=cfg.qqe_sf,
                   factor=cfg.qqe_factor, source=source)
     _, entry = evaluate(pre, prev_side=None, **kwargs)

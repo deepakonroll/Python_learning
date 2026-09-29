@@ -14,7 +14,7 @@ from datetime import datetime
 import pandas as pd
 
 from ..market_hours import IST
-from .base import ProviderError, filter_session, normalize_candles
+from .base import ProviderError, normalize_candles
 
 _KITE_INTERVAL = {
     "1m": "minute",
@@ -99,4 +99,4 @@ class KiteProvider:
         if raw is None or len(raw) == 0:
             raise ProviderError("kite returned no candles")
         candles = normalize_candles(pd.DataFrame(raw))
-        return filter_session(candles).tail(max(lookback, 30))
+        return candles.tail(max(lookback, 30))    # session filter: app.fetch_candles

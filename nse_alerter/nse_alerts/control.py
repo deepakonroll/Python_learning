@@ -108,20 +108,21 @@ def _reply(cfg: Config, text: str) -> None:
 
 
 def _status_text(store: StateStore, cfg: Config) -> str:
-    symbol = _symbol_hint(store)
-    state = store.load().get(symbol)
+    states = store.load()
     enabled = is_enabled(store)
     override = store.get_control().get("strategy")
     eff = effective_strategy(cfg, store)
     source = "Telegram override" if override else "config default"
     lines = [(f"✅ Alerts: ON" if enabled else f"🛑 Alerts: OFF")]
     lines.append(f"🎯 Strategy: {eff} ({source})")
-    if state:
-        lines.append(f"📊 {symbol} side={state.last_side} · "
-                     f"last bar {state.last_processed_bar or 'n/a'}")
-        if state.last_event_side:
-            lines.append(f"🔔 last event: {state.last_event_side} @ "
-                         f"{state.last_event_bar or '?'}")
+    lines.append(f"🔭 Watching: {', '.join(w.key for w in cfg.watches)}")
+    for key in sorted(states):
+        st = states[key]
+        lines.append(f"📊 {key} side={st.last_side} · "
+                     f"last bar {st.last_processed_bar or 'n/a'}")
+        if st.last_event_side:
+            lines.append(f"🔔 {key} last event: {st.last_event_side} @ "
+                         f"{st.last_event_bar or '?'}")
     lines.append("Commands: /disable · /enable · /status · "
                  "/strategy qqe|ema20|both|default")
     return "\n".join(lines)

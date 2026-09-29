@@ -31,6 +31,70 @@ STRATEGIES = ("qqe", "ema20", "both")          # qqe = default (QQE signals port
 STRATEGY_ALIASES = {"ema": "ema20", "qqe-signals": "qqe"}
 
 
+@dataclass(frozen=True)
+class Watch:
+    """One instrument in the scan list.
+
+    key        state-key base, exactly as written in SYMBOLS (e.g. 'MCX:CRUDEOIL')
+    label      short display name (symbol part only)
+    exchange   NSE | MCX - picks the trading session window
+    tv_symbol  what the TradingView provider fetches ('EXCH:SYM' is parsed there)
+    yahoo_symbol  free proxy (e.g. BZ=F) or None when no proxy exists
+    """
+    key: str
+    label: str
+    exchange: str
+    tv_symbol: str
+    yahoo_symbol: str | None = None
+
+
+# label -> (exchange, yahoo proxy) for bare symbols typed in SYMBOLS
+DEFAULT_WATCHES: dict[str, tuple[str, str | None]] = {
+    "NIFTY1!": ("NSE", "^NSEI"),
+    "CRUDEOIL": ("MCX", "BZ=F"),        # Brent - MCX crude's international benchmark
+    "CRUDEOILM": ("MCX", "BZ=F"),
+    "NATURALGAS": ("MCX", "NG=F"),      # Henry Hub
+}
+SYMBOLS_DEFAULT = "NIFTY1!,MCX:CRUDEOIL,MCX:NATURALGAS"
+
+
+def parse_watches(raw: str) -> tuple[Watch, ...]:
+    """'NIFTY1!,MCX:CRUDEOIL>BZ=F,...' -> Watch tuple.
+
+    Entry forms:  SYMBOL            (must be in DEFAULT_WATCHES)
+                  EXCHANGE:SYMBOL   (proxy from DEFAULT_WATCHES if known)
+                  EXCHANGE:SYMBOL>YAHOO_PROXY   (fully explicit)
+    """
+    watches: list[Watch] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        tv_part, _, proxy = part.partition(">")
+        proxy = proxy.strip() or None
+        if ":" in tv_part:
+            exchange, label = tv_part.split(":", 1)
+            exchange = exchange.upper()
+        else:
+            label = tv_part
+            known = DEFAULT_WATCHES.get(label)
+            if known is None:
+                raise ConfigError(
+                    f"unknown symbol {label!r} - use EXCHANGE:SYMBOL"
+                    f"(e.g. MCX:CRUDEOIL>BZ=F)")
+            exchange = known[0]
+        if proxy is None:
+            known = DEFAULT_WATCHES.get(label)
+            proxy = known[1] if known else None
+        if not label:
+            raise ConfigError(f"empty symbol in SYMBOLS={raw!r}")
+        watches.append(Watch(key=tv_part, label=label, exchange=exchange,
+                             tv_symbol=tv_part, yahoo_symbol=proxy))
+    if not watches:
+        raise ConfigError("SYMBOLS produced no watches")
+    return tuple(watches)
+
+
 def normalize_strategy(value: str) -> str | None:
     """Canonical strategy name, or None when invalid ('' -> None)."""
     canonical = STRATEGY_ALIASES.get(value, value)
@@ -43,8 +107,9 @@ class ConfigError(RuntimeError):
 
 @dataclass(frozen=True)
 class Config:
-    symbol: str                 # primary symbol + state key (e.g. NIFTY1!)
-    yahoo_symbol: str           # spot proxy used by the yahoo fallback
+    symbol: str                 # primary/first watch label (back-compat)
+    watches: tuple              # tuple[Watch, ...] - instruments to scan
+    yahoo_symbol: str           # primary watch's spot proxy (back-compat)
     interval: str               # "5m"
     ema_len: int                # 20
     lookback_bars: int          # how many bars to fetch (EMA warm-up)
@@ -142,9 +207,11 @@ def load_config() -> Config:
     if not symbol:
         raise ConfigError("SYMBOL must not be empty")
 
+    watches = parse_watches(_env("SYMBOLS", SYMBOLS_DEFAULT))
     return Config(
-        symbol=symbol,
-        yahoo_symbol=_env("YAHOO_SYMBOL", "^NSEI"),
+        watches=watches,
+        symbol=watches[0].label,
+        yahoo_symbol=watches[0].yahoo_symbol or "^NSEI",
         interval=interval,
         ema_len=_env_int("EMA_LEN", 20),
         lookback_bars=_env_int("LOOKBACK_BARS", 300, minimum=30),

@@ -44,7 +44,8 @@ def rig(monkeypatch, tmp_path):
     sent = Recorder()
     provider = FakeProvider(make_candles(falling(26)))   # 09:15..11:20, all completed
     monkeypatch.setattr(app, "now_ist", lambda: MONDAY)
-    monkeypatch.setattr(app, "build_providers", lambda cfg: [provider])
+    monkeypatch.setattr(app, "build_providers",
+                        lambda cfg, watch=None: [provider])
     monkeypatch.setattr(app, "send_telegram", sent)
     from nse_alerts import control
     monkeypatch.setattr(control, "fetch_updates", lambda token: [])
@@ -327,4 +328,69 @@ def test_control_override_beats_config_default(rig):
     states = StateStore(cfg.state_file).load()
     assert "NIFTY1!#qqe" in states                          # override applied
     assert "rule=qqe" in sent.messages[0][2]                # heartbeat labels it
+
+
+def test_watches_gated_by_their_own_exchange_sessions(monkeypatch, tmp_path):
+    """Monday 20:00 IST: NSE is closed but MCX energy trades - only crude runs."""
+    from datetime import datetime
+
+    from nse_alerts import control
+    from nse_alerts.config import Watch
+    from nse_alerts.market_hours import IST
+
+    sent = Recorder()
+    provider = FakeProvider(make_candles(falling(26)))
+    nifty = Watch(key="NIFTY1!", label="NIFTY1!", exchange="NSE",
+                  tv_symbol="NIFTY1!", yahoo_symbol="^NSEI")
+    crude = Watch(key="MCX:CRUDEOIL", label="CRUDEOIL", exchange="MCX",
+                  tv_symbol="MCX:CRUDEOIL", yahoo_symbol="BZ=F")
+    cfg = make_config(tmp_path, watches=(nifty, crude))
+    evening = datetime(2026, 9, 28, 20, 0, tzinfo=IST)
+    monkeypatch.setattr(app, "now_ist", lambda: evening)
+    monkeypatch.setattr(app, "build_providers", lambda cfg, watch=None: [provider])
+    monkeypatch.setattr(app, "send_telegram", sent)
+    monkeypatch.setattr(control, "fetch_updates", lambda token: [])
+
+    assert app.run(cfg) == 0
+    assert provider.calls == 1                                # MCX watch only
+    states = StateStore(cfg.state_file).load()
+    assert "MCX:CRUDEOIL" in states
+    assert "NIFTY1!" not in states                            # never fetched
+    heartbeats = [t for _, _, t in sent.messages if "monitoring live" in t]
+    assert len(heartbeats) == 1 and "MCX:CRUDEOIL" in heartbeats[0]
+
+
+def test_both_sessions_open_evaluate_every_watch(rig):
+    """Monday 13:30: both exchanges open -> fetch per watch, heartbeat per watch."""
+    from dataclasses import replace
+
+    from nse_alerts.config import Watch
+
+    cfg, provider, sent = rig
+    nifty = Watch(key="NIFTY1!", label="NIFTY1!", exchange="NSE",
+                  tv_symbol="NIFTY1!", yahoo_symbol="^NSEI")
+    crude = Watch(key="MCX:CRUDEOIL", label="CRUDEOIL", exchange="MCX",
+                  tv_symbol="MCX:CRUDEOIL", yahoo_symbol="BZ=F")
+    cfg = replace(cfg, watches=(nifty, crude))
+
+    assert app.run(cfg) == 0
+    assert provider.calls == 2                                # one fetch per watch
+    states = StateStore(cfg.state_file).load()
+    assert "NIFTY1!" in states and "MCX:CRUDEOIL" in states
+    heartbeats = [t for _, _, t in sent.messages if "monitoring live" in t]
+    assert len(heartbeats) == 2                               # once per watch/day
+
+
+def test_status_lists_every_watch(rig, monkeypatch):
+    from nse_alerts import control
+
+    cfg, provider, sent = rig
+    replies: list[str] = []
+    monkeypatch.setattr(control, "send_telegram",
+                        lambda token, chat_id, text, **kw: replies.append(text))
+    monkeypatch.setattr(control, "fetch_updates",
+                        lambda token: [{"message": {"chat": {"id": 42},
+                                                    "text": "/status"}}])
+    assert app.run(cfg) == 0
+    assert replies and "🔭 Watching: NIFTY1!" in replies[0]
 
