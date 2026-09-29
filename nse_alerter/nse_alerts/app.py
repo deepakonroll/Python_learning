@@ -14,7 +14,7 @@ import sys
 from datetime import date, datetime, time
 
 from .config import INTERVAL_MINUTES, Config, ConfigError
-from .control import process_commands
+from .control import effective_strategy, process_commands
 from .market_hours import IST, in_session, now_ist
 from .notify import NotifyError, ping_message, send_telegram
 from .providers.base import DataProvider, ProviderError, completed_bars
@@ -97,6 +97,9 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         log.info("alerts disabled via Telegram /disable - nothing to do")
         return 0
 
+    # Telegram /strategy override beats env/default - mobile-first switching
+    effective = effective_strategy(cfg, store)
+
     if not dry_run and not in_session(now, cfg.holidays):
         log.debug("outside NSE session (%s IST) - nothing to do", now.strftime("%H:%M"))
         return 0
@@ -110,7 +113,9 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     states = store.load()
     bar_iso = candles.index[-1].isoformat()
     today = now.date().isoformat()
-    strategies = cfg.active_strategies()      # [ema20] | [qqe] | [ema20, qqe]
+    # one engine, or both when the effective strategy is 'both'
+    strategies = ["ema20", "qqe"] if effective == "both" else [effective]
+    log.debug("effective strategy: %s", effective)
 
     for index, strat in enumerate(strategies):
         # dedicated state key per strategy so toggling never mixes baselines
@@ -152,7 +157,8 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
                     last_seen_date=today,
                 ))
                 if new_day and index == 0:
-                    _heartbeat(cfg, current_side, bar_iso, source)  # once/day
+                    _heartbeat(cfg, current_side, bar_iso, source,
+                               effective)     # once/day, labels the mode
             continue
 
         text = event.message()
@@ -197,13 +203,14 @@ def _send_test(cfg: Config, dry_run: bool) -> int:
     return 0
 
 
-def _heartbeat(cfg: Config, side: str, bar_iso: str, source: str) -> None:
+def _heartbeat(cfg: Config, side: str, bar_iso: str, source: str,
+               strategy_label: str | None = None) -> None:
     """One liveness ping per trading day (and on the very first run), so a
     silent pipeline is impossible to miss. Failures never affect alerts."""
     if not (cfg.telegram_token and cfg.telegram_chat_id):
         return
     text = (f"🔎 monitoring live · {now_ist():%d %b %Y}\n"
-            f"{cfg.symbol} side={side} · rule={cfg.strategy} · "
+            f"{cfg.symbol} side={side} · rule={strategy_label or cfg.strategy} · "
             f"last bar {bar_iso} · src={source}")
     try:
         send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
@@ -233,10 +240,13 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
         return []
 
     pre = candles[candles.index < day_bars.index[0]]
-    strat = cfg.active_strategies()[0]        # replay walks the primary strategy
+    # replay honours the same effective strategy as live runs (Telegram override)
+    eff = effective_strategy(cfg, StateStore(cfg.state_file))
+    strat = "ema20" if eff == "both" else eff       # replay walks the primary engine
     label = STRATEGY_LABELS.get(strat, strat)
     print(f"Replay {cfg.symbol} · {target.isoformat()} · {cfg.interval} "
-          f"{label} · feed={source} · {len(day_bars)} bars that day")
+          f"{label} · feed={source} · {len(day_bars)} bars that day"
+          + ("  [strategy=both -> showing ema20]" if eff == "both" else ""))
     if len(pre) < (cfg.ema_len + 2 if strat == "ema20" else 72):
         print(f"insufficient warm-up before the session ({len(pre)} bars) - "
               f"try DATA_PROVIDER=yahoo (deeper history)")

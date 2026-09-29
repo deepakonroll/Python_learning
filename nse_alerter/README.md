@@ -111,7 +111,9 @@ The live run polls the bot chat first and honors **only your chat id**:
 |---|---|
 | `/disable` | 🛑 cloud runs stay idle (no market fetch, no alerts) until you re-enable |
 | `/enable` | ✅ resumes — even evaluates immediately on that run |
-| `/status` | 📊 on/off flag, current side, last bar & last event |
+| `/status` | 📊 on/off flag, **effective strategy**, current side, last bar & last event |
+| `/strategy qqe` · `/strategy ema20` · `/strategy both` | 🎯 **switch the strategy from your phone** — persisted in `state.json`, applied on the very next scan, shown in `/status` as "Telegram override" |
+| `/strategy default` | 🎯 remove the override and return to the `.env`/repo-variable value |
 
 A tappable keyboard with these buttons appears after your first command.
 Replies arrive within one scheduler cycle (≤5 min during market hours, or on

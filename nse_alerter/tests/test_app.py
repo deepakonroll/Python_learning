@@ -292,3 +292,36 @@ def test_qqe_mode_ignores_ema_data_length_requirements(rig):
     provider.df = make_candles(WAVE_FALL[:40])              # below QQE warm-up
     assert app.run(cfg) == 3                                # clear data error
 
+
+def test_telegram_strategy_command_switches_this_run(rig, monkeypatch):
+    from nse_alerts import control
+    from tests.conftest import make_candles
+
+    cfg, provider, sent = rig                               # cfg strategy = ema20
+    provider.df = make_candles(WAVE_FALL, start="2026-09-26 09:15")
+    replies: list[str] = []
+    monkeypatch.setattr(control, "send_telegram",
+                        lambda token, chat_id, text, **kw: replies.append(text))
+    monkeypatch.setattr(control, "fetch_updates",
+                        lambda token: [{"message": {"chat": {"id": 42},
+                                                    "text": "/strategy qqe"}}])
+    assert app.run(cfg) == 0
+    assert any("applied" in r for r in replies)
+    assert any("qqe" in r and "Telegram override" in r for r in replies)
+    states = StateStore(cfg.state_file).load()
+    assert "NIFTY1!#qqe" in states and "NIFTY1!" not in states  # switched THIS run
+    assert any("rule=qqe" in text for _, _, text in sent.messages)  # heartbeat label
+
+
+def test_control_override_beats_config_default(rig):
+    from tests.conftest import make_candles
+
+    cfg, provider, sent = rig                              # cfg strategy = ema20
+    StateStore(cfg.state_file).set_control(
+        {"enabled": True, "strategy": "qqe"})
+    provider.df = make_candles(WAVE_FALL, start="2026-09-26 09:15")
+    assert app.run(cfg) == 0
+    states = StateStore(cfg.state_file).load()
+    assert "NIFTY1!#qqe" in states                          # override applied
+    assert "rule=qqe" in sent.messages[0][2]                # heartbeat labels it
+

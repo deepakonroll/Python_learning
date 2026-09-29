@@ -16,6 +16,45 @@ def test_all_commands_kept_in_chronological_order():
     assert extract_commands(updates, 42) == ["/disable", "/enable"]  # int ok too
 
 
+def test_strategy_command_keeps_its_argument():
+    updates = [{"message": {"chat": {"id": 42}, "text": "/Strategy Both"}}]
+    assert extract_commands(updates, "42") == ["/strategy both"]
+
+
+def test_apply_strategy_sets_and_clears_override(tmp_path):
+    from nse_alerts.control import _apply_strategy, effective_strategy
+    from tests.conftest import make_config
+
+    store = StateStore(tmp_path / "state.json")
+    cfg = make_config(tmp_path)
+    assert "applied" in _apply_strategy(store, "/strategy both")
+    assert store.get_control()["strategy"] == "both"
+    assert effective_strategy(cfg, store) == "both"
+
+    assert "restored" in _apply_strategy(store, "/strategy default")
+    assert "strategy" not in store.get_control()
+    assert effective_strategy(cfg, store) == cfg.strategy
+
+
+def test_invalid_strategy_value_gets_usage_message(tmp_path):
+    from nse_alerts.control import _apply_strategy
+
+    store = StateStore(tmp_path / "state.json")
+    msg = _apply_strategy(store, "/strategy macd")
+    assert msg.startswith("❌") and "qqe" in msg
+    assert "strategy" not in store.get_control()
+
+
+def test_disable_merge_preserves_strategy_override(tmp_path):
+    from nse_alerts.control import _apply_strategy
+
+    store = StateStore(tmp_path / "state.json")
+    _apply_strategy(store, "/strategy qqe")
+    store.set_control({**store.get_control(), "enabled": False})   # /disable path
+    control = store.get_control()
+    assert control["strategy"] == "qqe" and control["enabled"] is False
+
+
 def test_other_chat_and_noise_ignored():
     updates = [{"message": {"chat": {"id": 999}, "text": "/disable"}},
                {"message": {"chat": {"id": 42}, "text": "hello"}}]

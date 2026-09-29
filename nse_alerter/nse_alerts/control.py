@@ -19,17 +19,19 @@ import logging
 
 import requests
 
-from .config import Config
+from .config import STRATEGIES, Config, normalize_strategy
 from .notify import NotifyError, send_telegram
 from .state import StateStore
 
 log = logging.getLogger("nse_alerts")
 
 CONTROL_KEY = "__control__"           # reserved key inside state.json
-COMMANDS = ("/disable", "/enable", "/status")
+COMMANDS = ("/disable", "/enable", "/status", "/strategy")
 
 KEYBOARD = {
-    "keyboard": [[{"text": "/disable"}, {"text": "/enable"}, {"text": "/status"}]],
+    "keyboard": [[{"text": "/disable"}, {"text": "/enable"}, {"text": "/status"}],
+                 [{"text": "/strategy both"}, {"text": "/strategy qqe"},
+                  {"text": "/strategy ema20"}]],
     "is_persistent": True,
     "resize_keyboard": True,
 }
@@ -66,21 +68,43 @@ def fetch_updates(token: str, getter=requests.get) -> list[dict]:
 
 
 def extract_commands(updates: list[dict], owner_chat_id: str) -> list[str]:
-    """All valid commands from the owner's chat, in chronological order."""
+    """All valid commands from the owner's chat, in chronological order.
+
+    '/strategy <x>' keeps its argument; other commands are single tokens.
+    """
     found: list[str] = []
     for update in updates:
         message = update.get("message") or {}
         chat_id = str((message.get("chat") or {}).get("id", ""))
         if chat_id != str(owner_chat_id):
             continue
-        text = (message.get("text") or "").strip().split(" ")[0].lower()
-        if text in COMMANDS:
-            found.append(text)
+        text = (message.get("text") or "").strip().lower()
+        if not text:
+            continue
+        first = text.split(" ")[0]
+        if first == "/strategy":
+            found.append(text)                 # keep the argument: "/strategy both"
+        elif first in COMMANDS:
+            found.append(first)
     return found
 
 
 def is_enabled(store: StateStore) -> bool:
     return bool(store.get_control().get("enabled", True))
+
+
+def effective_strategy(cfg: Config, store: StateStore) -> str:
+    """Telegram override (stored in state.json) wins over the env/default.
+
+    This is what makes strategy switching mobile-first: /strategy writes here,
+    every later run reads it - no rebuild, no repo settings, no computer.
+    """
+    override = store.get_control().get("strategy")
+    if isinstance(override, str):
+        canonical = normalize_strategy(override)
+        if canonical:
+            return canonical
+    return cfg.strategy
 
 
 def _reply(cfg: Config, text: str) -> None:
@@ -91,18 +115,23 @@ def _reply(cfg: Config, text: str) -> None:
         log.warning("command reply failed: %s", exc)
 
 
-def _status_text(store: StateStore) -> str:
+def _status_text(store: StateStore, cfg: Config) -> str:
     symbol = _symbol_hint(store)
     state = store.load().get(symbol)
     enabled = is_enabled(store)
+    override = store.get_control().get("strategy")
+    eff = effective_strategy(cfg, store)
+    source = "Telegram override" if override else "config default"
     lines = [(f"✅ Alerts: ON" if enabled else f"🛑 Alerts: OFF")]
+    lines.append(f"🎯 Strategy: {eff} ({source})")
     if state:
         lines.append(f"📊 {symbol} side={state.last_side} · "
                      f"last bar {state.last_processed_bar or 'n/a'}")
         if state.last_event_side:
             lines.append(f"🔔 last event: {state.last_event_side} @ "
                          f"{state.last_event_bar or '?'}")
-    lines.append("Commands: /disable · /enable · /status")
+    lines.append("Commands: /disable · /enable · /status · "
+                 "/strategy qqe|ema20|both|default")
     return "\n".join(lines)
 
 
@@ -129,13 +158,32 @@ def process_commands(cfg: Config, store: StateStore) -> bool:
     applied: list[str] = []
     for cmd in cmds:
         if cmd == "/disable":
-            store.set_control({"enabled": False})
+            store.set_control({**store.get_control(), "enabled": False})
             applied.append("🛑 /disable → applied")
         elif cmd == "/enable":
-            store.set_control({"enabled": True})
+            store.set_control({**store.get_control(), "enabled": True})
             applied.append("✅ /enable → applied")
+        elif cmd.startswith("/strategy"):
+            applied.append(_apply_strategy(store, cmd))
         else:                                     # /status - answered by summary
             applied.append("📊 /status → report below")
 
-    _reply(cfg, "\n".join(applied) + "\n" + _status_text(store))
+    _reply(cfg, "\n".join(applied) + "\n" + _status_text(store, cfg))
     return is_enabled(store)
+
+
+def _apply_strategy(store: StateStore, cmd: str) -> str:
+    """/strategy qqe|ema20|both|default -> persist override (keeps 'enabled')."""
+    arg = cmd.split(" ", 1)[1] if " " in cmd else ""
+    control = dict(store.get_control())
+    if arg in ("default", "auto", "env"):
+        control.pop("strategy", None)
+        store.set_control(control)
+        return "🎯 /strategy default → config value restored"
+    canonical = normalize_strategy(arg)
+    if canonical is None:
+        return (f"❌ /strategy {arg or '?'} → use qqe | ema20 | both "
+                f"(or 'default' to restore)")
+    control["strategy"] = canonical
+    store.set_control(control)                    # 'enabled' preserved by dict copy
+    return f"🎯 /strategy {canonical} → applied (next scan uses it)"

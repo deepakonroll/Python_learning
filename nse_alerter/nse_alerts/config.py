@@ -28,6 +28,13 @@ INTERVAL_MINUTES: dict[str, int] = {
 
 DATA_PROVIDERS = ("auto", "tv", "yahoo", "kite")
 STRATEGIES = ("qqe", "ema20", "both")          # qqe = default (QQE signals port)
+STRATEGY_ALIASES = {"ema": "ema20", "qqe-signals": "qqe"}
+
+
+def normalize_strategy(value: str) -> str | None:
+    """Canonical strategy name, or None when invalid ('' -> None)."""
+    canonical = STRATEGY_ALIASES.get(value, value)
+    return canonical if canonical in STRATEGIES else None
 
 
 class ConfigError(RuntimeError):
@@ -124,9 +131,9 @@ def load_config() -> Config:
         raise ConfigError(f"DATA_PROVIDER={provider!r} not one of {DATA_PROVIDERS}")
 
     strategy = _env("STRATEGY", "qqe").lower()          # default: QQE signals
-    strategy = {"ema": "ema20", "qqe-signals": "qqe"}.get(strategy, strategy)
-    if strategy not in STRATEGIES:
-        raise ConfigError(f"STRATEGY={strategy!r} not one of {STRATEGIES}")
+    strategy = normalize_strategy(strategy)
+    if strategy is None:
+        raise ConfigError(f"STRATEGY={_env('STRATEGY')!r} not one of {STRATEGIES}")
 
     state_file = _resolve(Path(_env("STATE_FILE", str(BASE_DIR / "state.json"))))
     log_file = _env("LOG_FILE")
