@@ -44,9 +44,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r nse_alerter/requirements-cloud.txt
 
-      - name: Evaluate EMA20 cross and notify
+      - name: Evaluate signal and notify
         run: python nse_alerter/main.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           STATE_FILE: ${{ github.workspace }}/nse_alerter/state.json
+          # Toggle strategies from repo Settings > Secrets and variables >
+          # Actions > Variables: STRATEGY = qqe | ema20 | both (default qqe)
+          STRATEGY: ${{ vars.STRATEGY || 'qqe' }}

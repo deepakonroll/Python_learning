@@ -43,9 +43,9 @@ def send_telegram(
     return body
 
 
-def ping_message(symbol: str, interval: str, ema_len: int) -> str:
+def ping_message(symbol: str, interval: str, strategy: str) -> str:
     """Credential check payload (named to avoid pytest collecting it)."""
     return (
         f"✅ NSE alerter test OK\n"
-        f"Monitoring {symbol} · {interval} close vs EMA{ema_len} (cross alerts only)"
+        f"Monitoring {symbol} · {interval} · rule={strategy} (cross alerts only)"
     )

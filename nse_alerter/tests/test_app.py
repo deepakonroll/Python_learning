@@ -249,3 +249,46 @@ def test_dry_run_never_polls_updates(rig, monkeypatch):
     monkeypatch.setattr(control, "fetch_updates", boom)
     assert app.run(cfg, dry_run=True) == 0
     assert provider.calls == 1                              # fetch ok, no send
+
+
+# ── Strategy toggle (STRATEGY=qqe | ema20 | both) ────────────────────────
+
+WAVE_FALL = [23000 - 60 + i * 0.9 for i in range(75)]       # warm-up day
+
+
+def test_qqe_strategy_uses_dedicated_state_key(rig):
+    from tests.conftest import make_candles
+
+    cfg, provider, sent = rig
+    cfg = __import__("dataclasses").replace(cfg, strategy="qqe")
+    provider.df = make_candles(WAVE_FALL, start="2026-09-26 09:15")
+    assert app.run(cfg) == 0
+    states = StateStore(cfg.state_file).load()
+    assert "NIFTY1!#qqe" in states                          # dedicated baseline
+    assert "NIFTY1!" not in states                          # ema key untouched
+    assert len(sent.messages) == 1                          # one daily heartbeat
+    assert "rule=qqe" in sent.messages[0][2]
+
+
+def test_both_strategies_baseline_with_single_heartbeat(rig):
+    from tests.conftest import make_candles
+
+    cfg, provider, sent = rig
+    cfg = __import__("dataclasses").replace(cfg, strategy="both")
+    provider.df = make_candles(WAVE_FALL, start="2026-09-26 09:15")
+    assert app.run(cfg) == 0
+    states = StateStore(cfg.state_file).load()
+    assert "NIFTY1!" in states and "NIFTY1!#qqe" in states   # both baselines
+    assert len(sent.messages) == 1                          # heartbeat only for primary
+    assert app.run(cfg) == 0                                # same day again
+    assert len(sent.messages) == 1                          # still one
+
+
+def test_qqe_mode_ignores_ema_data_length_requirements(rig):
+    from tests.conftest import make_candles
+
+    cfg, provider, _ = rig
+    cfg = __import__("dataclasses").replace(cfg, strategy="qqe")
+    provider.df = make_candles(WAVE_FALL[:40])              # below QQE warm-up
+    assert app.run(cfg) == 3                                # clear data error
+

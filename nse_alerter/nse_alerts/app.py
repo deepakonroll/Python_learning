@@ -21,7 +21,7 @@ from .providers.base import DataProvider, ProviderError, completed_bars
 from .providers.kite import KiteProvider
 from .providers.tv import TvProvider
 from .providers.yahoo import YahooProvider
-from .signals import SignalError, evaluate
+from .signals import STRATEGY_LABELS, SignalError, evaluate
 from .state import StateStore, SymbolState
 
 log = logging.getLogger("nse_alerts")
@@ -108,69 +108,79 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         return 3
 
     states = store.load()
-    stored = states.get(cfg.symbol)
-    prev_side = stored.last_side if stored else None
-
-    try:
-        event, current_side = evaluate(
-            candles,
-            symbol=cfg.symbol,
-            ema_len=cfg.ema_len,
-            prev_side=prev_side,
-            source=source,
-        )
-    except SignalError as exc:
-        log.error("signal evaluation failed: %s", exc)
-        return 3
-
     bar_iso = candles.index[-1].isoformat()
-    if event is None:
-        if stored is None:
-            log.info("baseline%s: %s side=%s (no alert on first run)",
-                     " (dry-run, not saved)" if dry_run else "",
-                     cfg.symbol, current_side)
-        else:
-            log.info("no cross - %s side=%s bar=%s", cfg.symbol, current_side, bar_iso)
-        if not dry_run:
-            today = now.date().isoformat()
-            new_day = stored is None or stored.last_seen_date != today
-            store.put(cfg.symbol, SymbolState(
-                last_side=current_side,
-                last_processed_bar=bar_iso,
-                last_event_side=stored.last_event_side if stored else "",
-                last_event_bar=stored.last_event_bar if stored else "",
-                history=stored.history if stored else [],
-                last_seen_date=today,
-            ))
-            if new_day:
-                _heartbeat(cfg, current_side, bar_iso, source)   # once per trading day
-        return 0
+    today = now.date().isoformat()
+    strategies = cfg.active_strategies()      # [ema20] | [qqe] | [ema20, qqe]
 
-    text = event.message()
-    if dry_run:
-        log.info("[dry-run] would send:\n%s", text)
-        return 0
+    for index, strat in enumerate(strategies):
+        # dedicated state key per strategy so toggling never mixes baselines
+        key = cfg.symbol if strat == "ema20" else f"{cfg.symbol}#{strat}"
+        stored = states.get(key)
+        prev_side = stored.last_side if stored else None
+        try:
+            event, current_side = evaluate(
+                candles,
+                symbol=cfg.symbol,
+                ema_len=cfg.ema_len,
+                prev_side=prev_side,
+                source=source,
+                strategy=strat,
+                rsi_period=cfg.qqe_rsi_period,
+                sf=cfg.qqe_sf,
+                factor=cfg.qqe_factor,
+            )
+        except SignalError as exc:
+            log.error("signal evaluation failed (%s): %s", strat, exc)
+            return 3
 
-    try:
-        assert cfg.telegram_token and cfg.telegram_chat_id   # guarded above
-        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
-    except NotifyError as exc:
-        log.error("telegram send failed (will retry next run): %s", exc)
-        return 2
+        if event is None:
+            if stored is None:
+                log.info("baseline%s: %s [%s] side=%s (no alert on first run)",
+                         " (dry-run, not saved)" if dry_run else "",
+                         key, strat, current_side)
+            else:
+                log.info("no cross - %s [%s] side=%s bar=%s",
+                         key, strat, current_side, bar_iso)
+            if not dry_run:
+                new_day = stored is None or stored.last_seen_date != today
+                store.put(key, SymbolState(
+                    last_side=current_side,
+                    last_processed_bar=bar_iso,
+                    last_event_side=stored.last_event_side if stored else "",
+                    last_event_bar=stored.last_event_bar if stored else "",
+                    history=stored.history if stored else [],
+                    last_seen_date=today,
+                ))
+                if new_day and index == 0:
+                    _heartbeat(cfg, current_side, bar_iso, source)  # once/day
+            continue
 
-    state = stored or SymbolState(last_side=current_side)
-    state.last_side = current_side
-    state.last_processed_bar = bar_iso
-    state.last_seen_date = now.date().isoformat()   # the alert itself proves liveness
-    state.record_event(event.side, event.bar_time.isoformat())
-    store.put(cfg.symbol, state)
-    log.info("sent %s alert for %s (bar %s)",
-             event.side, cfg.symbol, event.bar_time.strftime("%H:%M"))
+        text = event.message()
+        if dry_run:
+            log.info("[dry-run] would send:\n%s", text)
+            continue
+
+        try:
+            assert cfg.telegram_token and cfg.telegram_chat_id   # guarded above
+            send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+        except NotifyError as exc:
+            log.error("telegram send failed (%s, will retry next run): %s",
+                      strat, exc)
+            return 2                       # state untouched -> retried next run
+
+        state = stored or SymbolState(last_side=current_side)
+        state.last_side = current_side
+        state.last_processed_bar = bar_iso
+        state.last_seen_date = today        # the alert itself proves liveness
+        state.record_event(event.side, event.bar_time.isoformat())
+        store.put(key, state)
+        log.info("sent %s alert [%s] for %s (bar %s)",
+                 event.side, strat, cfg.symbol, event.bar_time.strftime("%H:%M"))
     return 0
 
 
 def _send_test(cfg: Config, dry_run: bool) -> int:
-    text = ping_message(cfg.symbol, cfg.interval, cfg.ema_len)
+    text = ping_message(cfg.symbol, cfg.interval, cfg.strategy)
     if dry_run:
         log.info("[dry-run] would send:\n%s", text)
         return 0
@@ -193,7 +203,8 @@ def _heartbeat(cfg: Config, side: str, bar_iso: str, source: str) -> None:
     if not (cfg.telegram_token and cfg.telegram_chat_id):
         return
     text = (f"🔎 monitoring live · {now_ist():%d %b %Y}\n"
-            f"{cfg.symbol} side={side} · last bar {bar_iso} · src={source}")
+            f"{cfg.symbol} side={side} · rule={cfg.strategy} · "
+            f"last bar {bar_iso} · src={source}")
     try:
         send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
     except NotifyError as exc:
@@ -222,26 +233,27 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
         return []
 
     pre = candles[candles.index < day_bars.index[0]]
-    print(f"Replay {cfg.symbol} · {target.isoformat()} · {cfg.interval} EMA{cfg.ema_len} "
-          f"cross-based · feed={source} · {len(day_bars)} bars that day")
-    if len(pre) < cfg.ema_len + 2:
+    strat = cfg.active_strategies()[0]        # replay walks the primary strategy
+    label = STRATEGY_LABELS.get(strat, strat)
+    print(f"Replay {cfg.symbol} · {target.isoformat()} · {cfg.interval} "
+          f"{label} · feed={source} · {len(day_bars)} bars that day")
+    if len(pre) < (cfg.ema_len + 2 if strat == "ema20" else 72):
         print(f"insufficient warm-up before the session ({len(pre)} bars) - "
               f"try DATA_PROVIDER=yahoo (deeper history)")
         return []
 
-    _, entry = evaluate(pre, symbol=cfg.symbol, ema_len=cfg.ema_len,
-                        prev_side=None, source=source)
+    kwargs = dict(symbol=cfg.symbol, ema_len=cfg.ema_len, strategy=strat,
+                  rsi_period=cfg.qqe_rsi_period, sf=cfg.qqe_sf,
+                  factor=cfg.qqe_factor, source=source)
+    _, entry = evaluate(pre, prev_side=None, **kwargs)
     print(f"entering side: {entry}")
 
     events, prev, pos = [], entry, len(pre)
     for i in range(pos, len(candles)):
-        event, prev = evaluate(candles.iloc[:i + 1], symbol=cfg.symbol,
-                               ema_len=cfg.ema_len, prev_side=prev, source=source)
+        event, prev = evaluate(candles.iloc[:i + 1], prev_side=prev, **kwargs)
         if event:
             events.append(event)
-            sign = ">" if event.side == "BUY" else "<"
-            print(f"  {event.bar_time:%H:%M}  {event.side:<4}  close {event.close:,.2f} "
-                  f"{sign} EMA{cfg.ema_len} {event.ema:,.2f}")
+            print(f"  {event.bar_time:%H:%M}  {event.side:<4}  {event.rule}")
 
     print(f"-> {len(events)} cross(es) that day · ending side {prev}")
     return events

@@ -46,6 +46,10 @@ def make_config(tmp_path, **overrides) -> Config:
         ema_len=20,
         lookback_bars=300,
         data_provider="auto",
+        strategy="ema20",                        # legacy rule keeps old tests stable
+        qqe_rsi_period=14,
+        qqe_sf=5,
+        qqe_factor=4.238,
         telegram_token="test-token",
         telegram_chat_id="42",
         kite_api_key=None,

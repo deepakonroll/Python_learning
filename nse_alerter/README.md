@@ -1,9 +1,17 @@
-# NSE Alerter — NIFTY Futures 5m × EMA20 Cross → Telegram
+# NSE Alerter — NIFTY Futures 5m Signals → Telegram
 
-Rule: **on every completed 5-minute candle of NIFTY futures, if the close flips
-from below→above the 20 EMA → `BUY` alert; above→below → `SELL` alert.**
-Alerts are cross-based only (silent while price stays on the same side),
-delivered to **Telegram** (push on your phone), deduplicated via local state.
+**Strategies (toggle via `STRATEGY=`, no code changes):**
+
+| Value | Rule |
+|---|---|
+| **`qqe`** *(default)* | Ported **"QQE signals"** Pine script (colinmck): Wilders-RSI → smoothed ATR-of-RSI bands; alert when the trailing line flips across RSIndex → `BUY` (Long) / `SELL` (Short). Smoother, fewer whipsaws (~5 flips/day on recent NIFTY data vs EMA20's ~11). |
+| `ema20` | The original rule: 5m close flips below→above EMA20 → `BUY`, above→below → `SELL`. |
+| `both` | Both engines run side by side with **independent dedupe state** (`NIFTY1!` and `NIFTY1!#qqe`), one daily heartbeat. |
+
+Alerts are flip-based only (silent while the side stays the same), delivered to
+**Telegram** (push on your phone), deduplicated via local state. Cloud toggle:
+repo **Settings → Secrets and variables → Actions → Variables** → add
+`STRATEGY` = `qqe` / `ema20` / `both` (defaults to `qqe` when unset).
 
 ```
 nse_alerter/

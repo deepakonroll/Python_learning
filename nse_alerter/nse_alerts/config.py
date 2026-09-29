@@ -27,6 +27,7 @@ INTERVAL_MINUTES: dict[str, int] = {
 }
 
 DATA_PROVIDERS = ("auto", "tv", "yahoo", "kite")
+STRATEGIES = ("qqe", "ema20", "both")          # qqe = default (QQE signals port)
 
 
 class ConfigError(RuntimeError):
@@ -41,6 +42,10 @@ class Config:
     ema_len: int                # 20
     lookback_bars: int          # how many bars to fetch (EMA warm-up)
     data_provider: str          # auto | tv | yahoo | kite
+    strategy: str               # qqe | ema20 | both  (active strategies)
+    qqe_rsi_period: int
+    qqe_sf: int
+    qqe_factor: float
     telegram_token: str | None
     telegram_chat_id: str | None
     kite_api_key: str | None
@@ -48,6 +53,12 @@ class Config:
     state_file: Path
     holidays: frozenset[date]
     log_file: Path | None
+
+    def active_strategies(self) -> list[str]:
+        """Which engines run this pass, primary first (heartbeat uses [0])."""
+        if self.strategy == "both":
+            return ["ema20", "qqe"]
+        return [self.strategy]
 
 
 def _env(name: str, default: str = "") -> str:
@@ -70,6 +81,19 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         raise ConfigError(f"{name}={raw!r} is not an integer") from exc
     if value < minimum:
         raise ConfigError(f"{name}={value} must be >= {minimum}")
+    return value
+
+
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    raw = _env(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name}={raw!r} is not a number") from exc
+    if value <= minimum:
+        raise ConfigError(f"{name}={value} must be > {minimum}")
     return value
 
 
@@ -99,6 +123,11 @@ def load_config() -> Config:
     if provider not in DATA_PROVIDERS:
         raise ConfigError(f"DATA_PROVIDER={provider!r} not one of {DATA_PROVIDERS}")
 
+    strategy = _env("STRATEGY", "qqe").lower()          # default: QQE signals
+    strategy = {"ema": "ema20", "qqe-signals": "qqe"}.get(strategy, strategy)
+    if strategy not in STRATEGIES:
+        raise ConfigError(f"STRATEGY={strategy!r} not one of {STRATEGIES}")
+
     state_file = _resolve(Path(_env("STATE_FILE", str(BASE_DIR / "state.json"))))
     log_file = _env("LOG_FILE")
     log_file = _resolve(Path(log_file)) if log_file else None
@@ -113,6 +142,10 @@ def load_config() -> Config:
         ema_len=_env_int("EMA_LEN", 20),
         lookback_bars=_env_int("LOOKBACK_BARS", 300, minimum=30),
         data_provider=provider,
+        strategy=strategy,
+        qqe_rsi_period=_env_int("QQE_RSI_PERIOD", 14),
+        qqe_sf=_env_int("QQE_SF", 5),
+        qqe_factor=_env_float("QQE_FACTOR", 4.238),
         telegram_token=_env("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=_env("TELEGRAM_CHAT_ID") or None,
         kite_api_key=_env("KITE_API_KEY") or None,
