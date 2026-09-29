@@ -16,7 +16,7 @@ from datetime import date, datetime, time
 from .config import INTERVAL_MINUTES, Config, ConfigError
 from .control import effective_strategy, process_commands
 from .market_hours import IST, in_session, now_ist
-from .notify import NotifyError, ping_message, send_telegram
+from .notify import KEYBOARD, NotifyError, ping_message, send_telegram
 from .providers.base import DataProvider, ProviderError, completed_bars
 from .providers.kite import KiteProvider
 from .providers.tv import TvProvider
@@ -168,7 +168,8 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
 
         try:
             assert cfg.telegram_token and cfg.telegram_chat_id   # guarded above
-            send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+            send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text,
+                          reply_markup=KEYBOARD)
         except NotifyError as exc:
             log.error("telegram send failed (%s, will retry next run): %s",
                       strat, exc)
@@ -195,7 +196,8 @@ def _send_test(cfg: Config, dry_run: bool) -> int:
                   "first (steps are in the README)")
         return 1
     try:
-        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text,
+                      reply_markup=KEYBOARD)
     except NotifyError as exc:
         log.error("test send failed: %s", exc)
         return 2
@@ -213,7 +215,8 @@ def _heartbeat(cfg: Config, side: str, bar_iso: str, source: str,
             f"{cfg.symbol} side={side} · rule={strategy_label or cfg.strategy} · "
             f"last bar {bar_iso} · src={source}")
     try:
-        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text,
+                      reply_markup=KEYBOARD)   # buttons arrive with the heartbeat
     except NotifyError as exc:
         log.warning("heartbeat failed (alerts unaffected): %s", exc)
 

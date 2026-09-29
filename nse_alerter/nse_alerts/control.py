@@ -20,21 +20,13 @@ import logging
 import requests
 
 from .config import STRATEGIES, Config, normalize_strategy
-from .notify import NotifyError, send_telegram
+from .notify import KEYBOARD, NotifyError, send_telegram
 from .state import StateStore
 
 log = logging.getLogger("nse_alerts")
 
 CONTROL_KEY = "__control__"           # reserved key inside state.json
 COMMANDS = ("/disable", "/enable", "/status", "/strategy")
-
-KEYBOARD = {
-    "keyboard": [[{"text": "/disable"}, {"text": "/enable"}, {"text": "/status"}],
-                 [{"text": "/strategy both"}, {"text": "/strategy qqe"},
-                  {"text": "/strategy ema20"}]],
-    "is_persistent": True,
-    "resize_keyboard": True,
-}
 
 
 def fetch_updates(token: str, getter=requests.get) -> list[dict]:

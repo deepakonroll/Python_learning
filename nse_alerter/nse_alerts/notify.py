@@ -13,6 +13,16 @@ import requests
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 TIMEOUT_SECONDS = 10
 
+# Tappable command keyboard - attached to every message the bot sends, so the
+# buttons are always visible after the first reply/heartbeat/alert.
+KEYBOARD = {
+    "keyboard": [[{"text": "/disable"}, {"text": "/enable"}, {"text": "/status"}],
+                 [{"text": "/strategy both"}, {"text": "/strategy qqe"},
+                  {"text": "/strategy ema20"}]],
+    "is_persistent": True,
+    "resize_keyboard": True,
+}
+
 
 class NotifyError(RuntimeError):
     """Delivery failed - the app keeps state unchanged so the send retries."""
