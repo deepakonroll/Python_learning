@@ -36,17 +36,33 @@ KEYBOARD = {
 
 
 def fetch_updates(token: str, getter=requests.get) -> list[dict]:
-    """Consume pending bot updates; network problems never break the run."""
-    try:
-        resp = getter(f"https://api.telegram.org/bot{token}/getUpdates", timeout=10)
-        data = resp.json()
-    except Exception as exc:
-        log.warning("command poll failed: %s", exc)
-        return []
-    if not data.get("ok"):
-        log.warning("command poll rejected: %s", data.get("description"))
-        return []
-    return data.get("result") or []
+    """Read AND confirm pending updates (Telegram only clears updates when a
+    later getUpdates call passes their max update_id + 1 as `offset`).
+
+    Loop: read batch -> next call carries offset (confirms it) and picks up
+    anything that arrived meanwhile -> until a read comes back empty.
+    Network problems never break the caller (returns what was collected).
+    """
+    url = f"https://api.telegram.org/bot{token}/getUpdates"
+    collected: list[dict] = []
+    offset: int | None = None
+    for _ in range(5):                          # bounded - no infinite loops
+        target = url if offset is None else f"{url}?offset={offset}&timeout=0"
+        try:
+            resp = getter(target, timeout=10)
+            data = resp.json()
+        except Exception as exc:
+            log.warning("command poll failed: %s", exc)
+            break
+        if not data.get("ok"):
+            log.warning("command poll rejected: %s", data.get("description"))
+            break
+        batch = data.get("result") or []
+        if not batch:
+            break                               # empty read also confirms prior batch
+        collected.extend(batch)
+        offset = max(u.get("update_id", 0) for u in batch) + 1   # confirm on next call
+    return collected
 
 
 def extract_commands(updates: list[dict], owner_chat_id: str) -> list[str]:

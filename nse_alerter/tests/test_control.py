@@ -29,6 +29,32 @@ def test_fetch_updates_network_failure_is_safe():
     assert fetch_updates("tok", getter=getter) == []
 
 
+def test_fetch_updates_confirms_batch_with_offset():
+    """Telegram clears updates only when offset > their update_id is passed."""
+    calls: list[str] = []
+    responses = [
+        {"ok": True, "result": [{"update_id": 100},
+                                {"update_id": 101}]},
+        {"ok": True, "result": []},              # confirmation read -> empty
+    ]
+
+    class Resp:
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    def getter(url, timeout=None):
+        calls.append(url)
+        return Resp(responses.pop(0))
+
+    out = fetch_updates("tok", getter=getter)
+    assert len(out) == 2                         # both collected, chronological
+    assert "offset=102" in calls[1]              # 101 + 1 confirms BOTH
+    assert len(calls) == 2                       # stop after empty read
+
+
 def test_fetch_updates_rejection_is_safe():
     class Resp:
         def json(self):
