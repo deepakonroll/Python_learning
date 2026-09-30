@@ -71,4 +71,43 @@ def test_reply_markup_included_when_provided():
         return FakeResponse()
 
     send_telegram("t", "42", "x", poster=poster, reply_markup={"keyboard": []})
-    assert captured["reply_markup"] == {"keyboard": []}     # tappable command keys
+    assert captured["reply_markup"] == {"keyboard": []}     # generic markup passthrough
+
+
+def test_answer_callback_dismisses_spinner():
+    from nse_alerts.notify import answer_callback
+
+    captured = {}
+
+    def poster(url, json=None, timeout=None):
+        captured.update(url=url, json=json)
+        return FakeResponse()
+
+    answer_callback("tok", "cbq-1", poster=poster)
+    assert captured["url"].endswith("bottok/answerCallbackQuery")
+    assert captured["json"] == {"callback_query_id": "cbq-1"}
+
+
+def test_edit_message_edits_in_place_with_markup():
+    from nse_alerts.notify import edit_message
+
+    captured = {}
+    kb = {"inline_keyboard": [[{"text": "⬅️ Back", "callback_data": "m:main"}]]}
+
+    def poster(url, json=None, timeout=None):
+        captured.update(url=url, json=json)
+        return FakeResponse()
+
+    edit_message("tok", "42", 7, "🎛 Menu", reply_markup=kb, poster=poster)
+    assert captured["url"].endswith("bottok/editMessageText")
+    assert captured["json"]["chat_id"] == "42"
+    assert captured["json"]["message_id"] == 7
+    assert captured["json"]["reply_markup"] == kb
+
+
+def test_menu_keyboard_is_inline_with_menu_button():
+    from nse_alerts.notify import MENU_KEYBOARD
+
+    button = MENU_KEYBOARD["inline_keyboard"][0][0]
+    assert button["text"] == "☰ Menu"
+    assert button["callback_data"] == "m:main"

@@ -13,15 +13,18 @@ import requests
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 TIMEOUT_SECONDS = 10
 
-# Tappable command keyboard - attached to every message the bot sends, so the
-# buttons are always visible after the first reply/heartbeat/alert.
-KEYBOARD = {
-    "keyboard": [[{"text": "/disable"}, {"text": "/enable"}, {"text": "/status"}],
-                 [{"text": "/strategy both"}, {"text": "/strategy qqe"},
-                  {"text": "/strategy ema20"}]],
-    "is_persistent": True,
-    "resize_keyboard": True,
+# Pop-up menu button - an INLINE keyboard attached to every message the bot
+# sends (alerts, heartbeats, replies). Tapping it opens the ☰ menu, which
+# then edits ITSELF in place (submenus replace the message text).
+MENU_KEYBOARD = {
+    "inline_keyboard": [[{"text": "☰ Menu", "callback_data": "m:main"}]],
 }
+
+# Inline taps arrive as callback_query updates; they must be acknowledged via
+# answerCallbackQuery (otherwise Telegram shows a loading spinner forever) and
+# menus are updated via editMessageText (the "pop up / replace" behaviour).
+ANSWER_API = "https://api.telegram.org/bot{token}/answerCallbackQuery"
+EDIT_API = "https://api.telegram.org/bot{token}/editMessageText"
 
 
 class NotifyError(RuntimeError):
@@ -51,6 +54,40 @@ def send_telegram(
     if not body.get("ok"):
         raise NotifyError(f"telegram rejected message: {body.get('description', 'unknown error')}")
     return body
+
+
+def _post(url: str, payload: dict, poster) -> dict:
+    """Shared POST + ok-check for the small Telegram methods."""
+    try:
+        resp = poster(url, json=payload, timeout=TIMEOUT_SECONDS)
+    except requests.RequestException as exc:
+        raise NotifyError(f"telegram unreachable: {exc}") from exc
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise NotifyError(f"telegram HTTP {resp.status_code}: non-JSON response") from exc
+    if not body.get("ok"):
+        raise NotifyError(f"telegram rejected: {body.get('description', 'unknown error')}")
+    return body
+
+
+def answer_callback(token: str, callback_query_id: str, poster=requests.post) -> dict:
+    """Acknowledge an inline-button tap (dismiss Telegram's loading spinner).
+
+    Must be called for EVERY callback_query received - even ignored ones -
+    or the user's tap appears stuck.
+    """
+    return _post(ANSWER_API.format(token=token),
+                 {"callback_query_id": callback_query_id}, poster)
+
+
+def edit_message(token: str, chat_id: str, message_id: int, text: str,
+                 reply_markup: dict | None = None, poster=requests.post) -> dict:
+    """Edit an existing message in place - the menu's 'pop up / replace' effect."""
+    payload: dict = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    return _post(EDIT_API.format(token=token), payload, poster)
 
 
 def ping_message(symbol: str, interval: str, strategy: str) -> str:

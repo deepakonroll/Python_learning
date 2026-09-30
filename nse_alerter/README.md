@@ -126,10 +126,14 @@ The live run polls the bot chat first and honors **only your chat id**:
 | `/strategy qqe` · `/strategy ema20` · `/strategy both` | 🎯 **switch the strategy from your phone** — persisted in `state.json`, applied on the very next scan, shown in `/status` as "Telegram override" |
 | `/strategy default` | 🎯 remove the override and return to the `.env`/repo-variable value |
 
-A tappable keyboard with these buttons appears after your first command.
+**Pop-up menu:** every message the bot sends (alert, heartbeat, reply) carries
+a **☰ Menu** inline button — tap it and a menu *pops up* (Status · Strategy ·
+Disable/Enable); navigating **edits the same message in place**, the inline
+way you know from web Telegram. Tapping ☰ under an alert opens a *fresh* menu
+message, so the alert text is never replaced. Typed commands above still work.
 Replies arrive within one scheduler cycle (≤5 min during market hours, or on
 the next manual "Run workflow" — polling happens before the session gate, so
-commands answer anytime a run happens). The flag persists in `state.json`
+commands and taps answer anytime a run happens). The flag persists in `state.json`
 (alongside signal state, already cached by GitHub Actions). Dry runs never
 poll `getUpdates` (it's a consuming read reserved for the live scheduler).
 

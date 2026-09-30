@@ -20,13 +20,20 @@ import logging
 import requests
 
 from .config import STRATEGIES, Config, normalize_strategy
-from .notify import KEYBOARD, NotifyError, send_telegram
+from .notify import (MENU_KEYBOARD, NotifyError, answer_callback, edit_message,
+                     send_telegram)
 from .state import StateStore
 
 log = logging.getLogger("nse_alerts")
 
 CONTROL_KEY = "__control__"           # reserved key inside state.json
 COMMANDS = ("/disable", "/enable", "/status", "/strategy")
+
+# Pop-up menu: inline callback_data namespace ('m:...') and the text sentinel
+# that marks a message AS a menu (so taps edit it in place, while ☰ under an
+# alert/heartbeat sends a fresh menu instead of destroying the alert text).
+CALLBACK_PREFIX = "m:"
+MENU_PREFIX = "🎛 Menu"
 
 
 def fetch_updates(token: str, getter=requests.get) -> list[dict]:
@@ -102,9 +109,100 @@ def effective_strategy(cfg: Config, store: StateStore) -> str:
 def _reply(cfg: Config, text: str) -> None:
     try:
         send_telegram(cfg.telegram_token or "", cfg.telegram_chat_id or "",
-                      text, reply_markup=KEYBOARD)
+                      text, reply_markup=MENU_KEYBOARD)
     except NotifyError as exc:               # a failed reply must never kill alerts
         log.warning("command reply failed: %s", exc)
+
+
+# --- pop-up menu (inline callbacks) -----------------------------------------
+
+
+def extract_callbacks(updates: list[dict], owner_chat_id: str) -> list[dict]:
+    """Every inline-button tap, in arrival order.
+
+    Each entry: {id, chat_id, message_id, text, data, from_owner}.
+    """
+    found: list[dict] = []
+    for update in updates:
+        cb = update.get("callback_query")
+        if not cb:
+            continue
+        message = cb.get("message") or {}
+        found.append({
+            "id": str(cb.get("id") or ""),
+            "chat_id": str((message.get("chat") or {}).get("id", "")),
+            "message_id": message.get("message_id"),
+            "text": str(message.get("text") or ""),
+            "data": str(cb.get("data") or ""),
+            "from_owner": str((cb.get("from") or {}).get("id", ""))
+                          == str(owner_chat_id),
+        })
+    return found
+
+
+def _menu_main(cfg: Config, store: StateStore) -> tuple[str, dict]:
+    enabled = is_enabled(store)
+    text = (f"{MENU_PREFIX}\n"
+            f"{'✅ Alerts: ON' if enabled else '🛑 Alerts: OFF'} · "
+            f"Strategy: {effective_strategy(cfg, store)}\n"
+            f"Tap a button:")
+    keyboard = {"inline_keyboard": [
+        [{"text": "📊 Status", "callback_data": "m:status"}],
+        [{"text": "🎯 Strategy", "callback_data": "m:strategy"}],
+        [{"text": "🛑 Disable" if enabled else "✅ Enable",
+          "callback_data": "m:toggle"}],
+    ]}
+    return text, keyboard
+
+
+def _menu_status(cfg: Config, store: StateStore) -> tuple[str, dict]:
+    text = f"{MENU_PREFIX}\n{_status_text(store, cfg)}"
+    keyboard = {"inline_keyboard": [
+        [{"text": "🔄 Refresh", "callback_data": "m:status"},
+         {"text": "🎯 Strategy", "callback_data": "m:strategy"}],
+        [{"text": "⬅️ Back", "callback_data": "m:main"}],
+    ]}
+    return text, keyboard
+
+
+def _menu_strategy(cfg: Config, store: StateStore) -> tuple[str, dict]:
+    override = store.get_control().get("strategy")
+    eff = effective_strategy(cfg, store)
+    source = "Telegram override" if override else "config default"
+    text = (f"{MENU_PREFIX}\n🎯 Strategy: {eff} ({source})\n"
+            f"Pick a strategy (applies this run):")
+    keyboard = {"inline_keyboard": [
+        [{"text": "qqe", "callback_data": "m:strategy:qqe"},
+         {"text": "ema20", "callback_data": "m:strategy:ema20"}],
+        [{"text": "both", "callback_data": "m:strategy:both"},
+         {"text": "default", "callback_data": "m:strategy:default"}],
+        [{"text": "⬅️ Back", "callback_data": "m:main"}],
+    ]}
+    return text, keyboard
+
+
+def _menu_action(cfg: Config, store: StateStore, cb: dict) -> tuple[str, dict]:
+    """Menu state machine: applies store changes, returns what the message
+    should now show. Falls back to the main menu for unknown taps."""
+    data = cb.get("data", "")
+    if data == "m:status":
+        return _menu_status(cfg, store)
+    if data == "m:strategy":
+        return _menu_strategy(cfg, store)
+    if data == "m:toggle":
+        enable = not is_enabled(store)
+        store.set_control({**store.get_control(), "enabled": enable})
+        text, keyboard = _menu_main(cfg, store)
+        note = "enabled" if enable else "disabled"
+        text = text.replace(MENU_PREFIX, f"{MENU_PREFIX} · {note}", 1)
+        return text, keyboard
+    if data.startswith("m:strategy:"):
+        arg = data.split(":", 2)[2]
+        result = _apply_strategy(store, f"/strategy {arg}")   # reuse typed-path
+        text, keyboard = _menu_main(cfg, store)
+        lines = text.split("\n", 1)
+        return f"{lines[0]}\n{result}\n{lines[1]}", keyboard
+    return _menu_main(cfg, store)
 
 
 def _status_text(store: StateStore, cfg: Config) -> str:
@@ -136,15 +234,44 @@ def _symbol_hint(store: StateStore) -> str:
 
 
 def process_commands(cfg: Config, store: StateStore) -> bool:
-    """Poll for owner commands; returns True when alerts should run.
+    """Poll for owner input - typed commands AND ☰ menu taps; returns True
+    when alerts should run.
 
-    EVERY queued command is applied in chronological order and acknowledged in
-    a single combined reply that always ends with the current state - so you
-    always get a definitive 'yes it took effect' answer, never silence.
+    Menu taps (callback_query):
+      * EVERY tap is acknowledged first (dismisses Telegram's spinner);
+      * owner taps inside a menu EDIT that message in place (the pop-up UX);
+      * owner taps under an alert/heartbeat SEND a fresh menu message, so the
+        alert text is never destroyed;
+      * non-owner taps are acknowledged but ignored.
+
+    Typed commands (unchanged): every queued command is applied in order and
+    acknowledged in a single combined reply ending with the current state.
     """
     if not cfg.telegram_token or not cfg.telegram_chat_id:
         return True
-    cmds = extract_commands(fetch_updates(cfg.telegram_token), cfg.telegram_chat_id)
+    updates = fetch_updates(cfg.telegram_token)
+
+    for cb in extract_callbacks(updates, cfg.telegram_chat_id):
+        try:
+            answer_callback(cfg.telegram_token, cb["id"])
+        except NotifyError as exc:
+            log.warning("menu ack failed: %s", exc)
+        if not cb["from_owner"] or not cb["chat_id"] or cb["message_id"] is None:
+            continue                            # someone else's tap: ack only
+        if not cb["data"].startswith(CALLBACK_PREFIX):
+            continue
+        try:
+            text, keyboard = _menu_action(cfg, store, cb)
+            if cb["text"].startswith(MENU_PREFIX):
+                edit_message(cfg.telegram_token, cb["chat_id"],
+                             cb["message_id"], text, reply_markup=keyboard)
+            else:                               # ☰ under an alert -> new message
+                send_telegram(cfg.telegram_token, cb["chat_id"], text,
+                              reply_markup=keyboard)
+        except NotifyError as exc:
+            log.warning("menu reply failed: %s", exc)
+
+    cmds = extract_commands(updates, cfg.telegram_chat_id)
     if not cmds:
         return is_enabled(store)
 

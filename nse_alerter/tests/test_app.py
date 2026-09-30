@@ -60,7 +60,7 @@ def test_first_run_records_baseline_and_sends_liveness_heartbeat(rig):
     text = sent.messages[0][2]
     assert "monitoring live" in text and "side=DOWN" in text
     assert "BUY" not in text and "SELL" not in text
-    assert sent.markups[0] is not None                      # tappable keyboard attached
+    assert sent.markups[0]["inline_keyboard"][0][0]["text"] == "☰ Menu"  # pop-up menu btn
     state = StateStore(cfg.state_file).get(cfg.symbol)
     assert state is not None and state.last_side == "DOWN"
     assert state.last_seen_date == "2026-09-28"
