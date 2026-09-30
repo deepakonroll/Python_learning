@@ -10,6 +10,7 @@ Exit codes (visible in Task Scheduler's "Last Run Result"):
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from datetime import date, datetime, time
 
@@ -220,7 +221,24 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     if ok == 0 and failed > 0:
         log.error("no watch could be evaluated this run (%d failed)", failed)
         return 3
+    if ok == 0 and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        # a manual "Run workflow" while every session is closed would otherwise
+        # be a silent success - tell the operator the pipeline is alive.
+        _manual_note(cfg, effective, len(cfg.watches))
     return 0
+
+
+def _manual_note(cfg: Config, strategy: str, watch_count: int) -> None:
+    if not (cfg.telegram_token and cfg.telegram_chat_id):
+        return
+    text = (f"🧪 manual run · {now_ist():%H:%M} IST · out of session\n"
+            f"NSE 09:15-15:35 · MCX 09:00-23:35 (Mon-Fri) · "
+            f"strategy={strategy} · watches={watch_count}")
+    try:
+        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text,
+                      reply_markup=MENU_KEYBOARD)
+    except NotifyError as exc:
+        log.warning("manual note failed: %s", exc)
 
 
 def _send_test(cfg: Config, dry_run: bool) -> int:

@@ -394,3 +394,40 @@ def test_status_lists_every_watch(rig, monkeypatch):
     assert app.run(cfg) == 0
     assert replies and "🔭 Watching: NIFTY1!" in replies[0]
 
+
+def test_manual_dispatch_out_of_session_replies_with_note(rig, monkeypatch):
+    """Pressing 'Run workflow' pre-market must prove the pipeline is alive."""
+    from datetime import datetime
+
+    from nse_alerts.market_hours import IST
+
+    cfg, provider, sent = rig
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 9, 28, 8, 0, tzinfo=IST))  # pre-open
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+
+    assert app.run(cfg) == 0
+    assert provider.calls == 0                                # gates still closed
+    assert len(sent.messages) == 1                            # but the note arrived
+    text = sent.messages[0][2]
+    assert "manual run" in text and "out of session" in text
+    assert sent.markups[0]["inline_keyboard"][0][0]["text"] == "☰ Menu"
+
+
+def test_scheduled_or_local_run_out_of_session_stays_silent(rig, monkeypatch):
+    """Scheduled cron runs (and local runs) must never add chat noise."""
+    from datetime import datetime
+
+    from nse_alerts.market_hours import IST
+
+    cfg, provider, sent = rig
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 9, 28, 8, 0, tzinfo=IST))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+    assert app.run(cfg) == 0
+    assert sent.messages == []
+
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)    # local run
+    assert app.run(cfg) == 0
+    assert sent.messages == []
+
