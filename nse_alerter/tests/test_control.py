@@ -139,6 +139,7 @@ def _menu_rig(monkeypatch, tmp_path, updates):
     monkeypatch.setattr(control, "send_telegram",
                         lambda token, chat, text, reply_markup=None, **kw:
                         events["sends"].append((text, reply_markup)))
+    monkeypatch.setattr(control, "MENU_ENABLED", True)   # menu tests exercise it
     return control, cfg, store, events
 
 
@@ -213,3 +214,14 @@ def test_menu_tap_and_typed_command_in_same_poll(monkeypatch, tmp_path):
     assert events["acks"] == ["cb-1"]
     assert len(events["sends"]) == 2                       # menu + combined reply
     assert "report below" in events["sends"][1][0]         # typed command honoured
+
+
+def test_menu_paused_shipped_default_only_acks_taps(monkeypatch, tmp_path):
+    """MENU_ENABLED=False (current shipped state): stale ☰ taps are acked so
+    the spinner dies, but no menu action happens and state is untouched."""
+    control, cfg, store, events = _menu_rig(monkeypatch, tmp_path, [_cb("m:toggle")])
+    monkeypatch.setattr(control, "MENU_ENABLED", False)
+    assert control.process_commands(cfg, store) is True    # still enabled
+    assert events["acks"] == ["cb-1"]
+    assert not events["edits"] and not events["sends"]
+    assert control.is_enabled(store)

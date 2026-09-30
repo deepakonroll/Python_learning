@@ -129,11 +129,11 @@ The live run polls the bot chat first and honors **only your chat id**:
 | `/strategy qqe` · `/strategy ema20` · `/strategy both` | 🎯 **switch the strategy from your phone** — persisted in `state.json`, applied on the very next scan, shown in `/status` as "Telegram override" |
 | `/strategy default` | 🎯 remove the override and return to the `.env`/repo-variable value |
 
-**Pop-up menu:** every message the bot sends (alert, heartbeat, reply) carries
-a **☰ Menu** inline button — tap it and a menu *pops up* (Status · Strategy ·
-Disable/Enable); navigating **edits the same message in place**, the inline
-way you know from web Telegram. Tapping ☰ under an alert opens a *fresh* menu
-message, so the alert text is never replaced. Typed commands above still work.
+**Menu paused:** the ☰ inline menu is built & tested but currently **not
+attached to messages** — tap latency without an always-on server made it feel
+dead. Typed commands (table above) are the interface; stale ☰ buttons on old
+messages are acknowledged but inert. Re-enable later: `MENU_ENABLED = True`
+in `nse_alerts/control.py` + re-attach `MENU_KEYBOARD` at the send sites.
 Replies arrive within one scheduler cycle (≤5 min during market hours, or on
 the next manual "Run workflow" — polling happens before the session gate, so
 commands and taps answer anytime a run happens). The flag persists in `state.json`

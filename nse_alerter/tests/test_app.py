@@ -60,7 +60,7 @@ def test_first_run_records_baseline_and_sends_liveness_heartbeat(rig):
     text = sent.messages[0][2]
     assert "monitoring live" in text and "side=DOWN" in text
     assert "BUY" not in text and "SELL" not in text
-    assert sent.markups[0]["inline_keyboard"][0][0]["text"] == "☰ Menu"  # pop-up menu btn
+    assert sent.markups[0] is None                          # menu buttons paused
     state = StateStore(cfg.state_file).get(cfg.symbol)
     assert state is not None and state.last_side == "DOWN"
     assert state.last_seen_date == "2026-09-28"
@@ -411,7 +411,7 @@ def test_manual_dispatch_out_of_session_replies_with_note(rig, monkeypatch):
     assert len(sent.messages) == 1                            # but the note arrived
     text = sent.messages[0][2]
     assert "manual run" in text and "out of session" in text
-    assert sent.markups[0]["inline_keyboard"][0][0]["text"] == "☰ Menu"
+    assert sent.markups[0] is None                            # menu buttons paused
 
 
 def test_scheduled_or_local_run_out_of_session_stays_silent(rig, monkeypatch):

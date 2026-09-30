@@ -20,8 +20,7 @@ import logging
 import requests
 
 from .config import STRATEGIES, Config, normalize_strategy
-from .notify import (MENU_KEYBOARD, NotifyError, answer_callback, edit_message,
-                     send_telegram)
+from .notify import NotifyError, answer_callback, edit_message, send_telegram
 from .state import StateStore
 
 log = logging.getLogger("nse_alerts")
@@ -32,8 +31,11 @@ COMMANDS = ("/disable", "/enable", "/status", "/strategy")
 # Pop-up menu: inline callback_data namespace ('m:...') and the text sentinel
 # that marks a message AS a menu (so taps edit it in place, while ☰ under an
 # alert/heartbeat sends a fresh menu instead of destroying the alert text).
+# PAUSED: buttons are no longer attached to messages (tap latency without an
+# always-on server); taps on stale buttons are only acked. One flag to resume.
 CALLBACK_PREFIX = "m:"
 MENU_PREFIX = "🎛 Menu"
+MENU_ENABLED = False
 
 
 def fetch_updates(token: str, getter=requests.get) -> list[dict]:
@@ -108,8 +110,7 @@ def effective_strategy(cfg: Config, store: StateStore) -> str:
 
 def _reply(cfg: Config, text: str) -> None:
     try:
-        send_telegram(cfg.telegram_token or "", cfg.telegram_chat_id or "",
-                      text, reply_markup=MENU_KEYBOARD)
+        send_telegram(cfg.telegram_token or "", cfg.telegram_chat_id or "", text)
     except NotifyError as exc:               # a failed reply must never kill alerts
         log.warning("command reply failed: %s", exc)
 
@@ -256,6 +257,8 @@ def process_commands(cfg: Config, store: StateStore) -> bool:
             answer_callback(cfg.telegram_token, cb["id"])
         except NotifyError as exc:
             log.warning("menu ack failed: %s", exc)
+        if not MENU_ENABLED:                 # paused: ack stops the spinner, done
+            continue
         if not cb["from_owner"] or not cb["chat_id"] or cb["message_id"] is None:
             continue                            # someone else's tap: ack only
         if not cb["data"].startswith(CALLBACK_PREFIX):
