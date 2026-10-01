@@ -147,6 +147,17 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
             # dedicated state key per (watch, strategy) so toggling never mixes
             key = watch.key if strat == "ema20" else f"{watch.key}#{strat}"
             stored = states.get(key)
+            if (stored is not None and stored.last_processed_bar
+                    and candles.index[-1]
+                    < datetime.fromisoformat(stored.last_processed_bar)):
+                # feed returned a window OLDER than what we already processed
+                # (mid-day feed hiccup) - evaluating it would fabricate flips.
+                # Equal bars are fine: same data -> same side, and the
+                # new-day heartbeat still gets its chance.
+                log.warning("stale window for %s (ends %s, stored %s) - skipped",
+                            key, candles.index[-1], stored.last_processed_bar)
+                watch_ok = True
+                continue
             prev_side = stored.last_side if stored else None
             try:
                 event, current_side = evaluate(
@@ -220,9 +231,11 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     if ok == 0 and failed > 0:
         log.error("no watch could be evaluated this run (%d failed)", failed)
         return 3
-    if ok == 0 and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        # a manual "Run workflow" while every session is closed would otherwise
-        # be a silent success - tell the operator the pipeline is alive.
+    if (ok == 0 and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+            and now.time() < session_bounds("MCX")[0]):
+        # Pre-open manual runs reply with proof of life. Post-close runs and the
+        # external cron's own dispatches (also workflow_dispatch!) stay silent -
+        # otherwise every dead-tail tick would spam a note.
         _manual_note(cfg, effective, len(cfg.watches))
     return 0
 

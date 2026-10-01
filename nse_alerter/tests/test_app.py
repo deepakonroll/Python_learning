@@ -431,3 +431,41 @@ def test_scheduled_or_local_run_out_of_session_stays_silent(rig, monkeypatch):
     assert app.run(cfg) == 0
     assert sent.messages == []
 
+
+def test_dispatch_note_only_before_open_no_nightly_spam(rig, monkeypatch):
+    """Post-close dispatch ticks (external cron!) must stay silent - the
+    23:35-23:55 double-notes happened because cron dispatches are also
+    workflow_dispatch events."""
+    from datetime import datetime
+
+    from nse_alerts.market_hours import IST
+
+    cfg, provider, sent = rig
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 9, 28, 23, 45, tzinfo=IST))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+
+    assert app.run(cfg) == 0
+    assert provider.calls == 0                                # all sessions shut
+    assert sent.messages == []                                # but no note at night
+
+
+def test_stale_window_never_fabricates_flips(rig):
+    """A feed returning a window OLDER than stored state must be skipped -
+    today's false BUY was stamped with yesterday's bar (29 Sep 15:25)."""
+    from nse_alerts.state import SymbolState
+
+    cfg, provider, sent = rig                                # candles end 11:20
+    StateStore(cfg.state_file).put(
+        cfg.symbol,
+        SymbolState(last_side="UP",                         # data says DOWN
+                    last_processed_bar="2026-09-28T14:00:00",   # ahead of window
+                    last_seen_date="2026-09-28"))
+
+    assert app.run(cfg) == 0
+    assert provider.calls == 1                                # fetch happened
+    assert sent.messages == []                                # no alert, no heartbeat
+    state = StateStore(cfg.state_file).get(cfg.symbol)
+    assert state.last_processed_bar == "2026-09-28T14:00:00"  # untouched
+    assert state.last_side == "UP"
+

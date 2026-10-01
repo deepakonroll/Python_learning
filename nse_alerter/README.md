@@ -110,9 +110,10 @@ python main.py --verbose                 # debug logging
 - **Daily liveness heartbeat**: the first successful run each trading day sends
   `🔎 monitoring live · <date> · side=…` — if it's missing by ~09:25 IST, the
   scheduler itself is down (check the Actions page).
-- **Manual runs reply**: `workflow_dispatch` ("Run workflow") while every
-  session is closed sends `🧪 manual run · … out of session` — instant
-  proof-of-life instead of a silent green run. Scheduled runs stay quiet.
+- **Manual runs reply**: `workflow_dispatch` ("Run workflow") **before the
+  09:00 open** while every session is closed sends `🧪 manual run · … out of
+  session` — instant proof-of-life. Scheduled runs, external-cron dispatches
+  and post-close runs stay quiet (no nightly notes).
 - Exit codes: `0` ok/no-op · `1` config (e.g. missing Telegram creds) ·
   `2` Telegram failed (state not saved → auto-retry next minute) · `3` data failed.
 - Logs: console + `nse_alerter.log` (Task Scheduler has no console).
