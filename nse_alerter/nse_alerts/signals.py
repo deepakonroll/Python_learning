@@ -24,9 +24,11 @@ from datetime import datetime
 
 import pandas as pd
 
+from .envelope import envelope_lines, envelope_side
 from .qqe import MIN_QQE_BARS, qqe_lines, qqe_side
 
-STRATEGY_LABELS = {"ema20": "EMA20 cross", "qqe": "QQE signals"}
+STRATEGY_LABELS = {"ema20": "EMA20 cross", "qqe": "QQE signals",
+                   "env": "Magic Envelope"}
 
 
 class SignalError(RuntimeError):
@@ -87,6 +89,9 @@ def evaluate(
     rsi_period: int = 14,
     sf: int = 5,
     factor: float = 4.238,
+    envelope_len: int = 20,
+    envelope_percent: float = 0.2,
+    envelope_exponential: bool = False,
 ) -> tuple[CrossEvent | None, str]:
     """Evaluate the selected strategy on the last completed bar.
 
@@ -95,7 +100,12 @@ def evaluate(
     """
     if candles is None:
         raise SignalError("no candle data")
-    needed = ema_len + 2 if strategy == "ema20" else MIN_QQE_BARS
+    if strategy == "env":
+        needed = envelope_len + 2
+    elif strategy == "qqe":
+        needed = MIN_QQE_BARS
+    else:
+        needed = ema_len + 2
     if len(candles) < needed:
         raise SignalError(f"need >= {needed} bars for {strategy}, got {len(candles)}")
 
@@ -108,6 +118,15 @@ def evaluate(
         lines = qqe_lines(closes, rsi_period, sf, factor)
         level = float(lines["FastAtrRsiTL"].iloc[-1])
         rsi_val = float(lines["RSIndex"].iloc[-1])
+    elif strategy == "env":
+        basis, upper, lower = envelope_lines(closes, envelope_len,
+                                             envelope_percent,
+                                             envelope_exponential)
+        sides = envelope_side(closes, candles["High"], candles["Low"],
+                              envelope_len, envelope_percent,
+                              envelope_exponential)
+        level = float(basis.iloc[-1])
+        env_band = (float(lower.iloc[-1]), float(upper.iloc[-1]))
     else:
         sides = side_series(closes, ema_len)
         level = float(ema(closes, ema_len).iloc[-1])
@@ -128,6 +147,11 @@ def evaluate(
         rule = (f"QQE flipped {'LONG' if cur == 'UP' else 'SHORT'} · "
                 f"close {close:,.2f} · trailing {level:.1f} vs "
                 f"RSI-ma {rsi_val:.1f} (RSI scale)")
+    elif strategy == "env":
+        lo_v, up_v = env_band
+        rule = (f"Env flipped {'LONG' if cur == 'UP' else 'SHORT'} · "
+                f"close {close:,.2f} · band {lo_v:,.2f}–{up_v:,.2f} "
+                f"(±{envelope_percent}%)")
     else:
         rule = (f"5m close {close:,.2f} "
                 f"{'>' if cur == 'UP' else '<'} EMA{ema_len} {level:,.2f}")

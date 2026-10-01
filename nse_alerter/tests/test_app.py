@@ -417,6 +417,85 @@ def test_status_hides_unwatched_symbols_stale_state(rig, monkeypatch):
     assert "NATURALGAS" not in replies[0]                   # hidden as unwatched
 
 
+def test_per_watch_strategy_suffix_runs_own_engine(rig):
+    """'MCX:CRUDEOIL~env' runs envelope while NIFTY keeps the global engine."""
+    from dataclasses import replace
+
+    from nse_alerts.config import Watch
+
+    cfg, provider, sent = rig                                # global strategy=ema20
+    nifty = Watch(key="NIFTY1!", label="NIFTY1!", exchange="NSE",
+                  tv_symbol="NIFTY1!", yahoo_symbol="^NSEI")
+    crude = Watch(key="MCX:CRUDEOIL", label="CRUDEOIL", exchange="MCX",
+                  tv_symbol="MCX:CRUDEOIL", yahoo_symbol="BZ=F",
+                  strategy="env")
+    cfg = replace(cfg, watches=(nifty, crude))
+
+    assert app.run(cfg) == 0
+    assert provider.calls == 2                                # one fetch per watch
+    states = StateStore(cfg.state_file).load()
+    assert "NIFTY1!" in states                # global ema20 -> base key
+    assert "MCX:CRUDEOIL#env" in states       # suffix -> envelope key
+    assert "MCX:CRUDEOIL" not in states       # crude NOT on the global engine
+
+
+def test_global_strategy_override_beats_watch_suffix(rig):
+    """/strategy qqe from Telegram steers EVERY watch, even '~env' ones."""
+    from dataclasses import replace
+
+    from nse_alerts.config import Watch
+
+    cfg, provider, sent = rig
+    provider.df = make_candles(falling(150), start="2026-09-26 09:15")  # QQE needs 72+
+    nifty = Watch(key="NIFTY1!", label="NIFTY1!", exchange="NSE",
+                  tv_symbol="NIFTY1!", yahoo_symbol="^NSEI")
+    crude = Watch(key="MCX:CRUDEOIL", label="CRUDEOIL", exchange="MCX",
+                  tv_symbol="MCX:CRUDEOIL", yahoo_symbol="BZ=F",
+                  strategy="env")
+    cfg = replace(cfg, watches=(nifty, crude))
+    StateStore(cfg.state_file).set_control({"enabled": True, "strategy": "qqe"})
+
+    assert app.run(cfg) == 0
+    states = StateStore(cfg.state_file).load()
+    assert "NIFTY1!#qqe" in states
+    assert "MCX:CRUDEOIL#qqe" in states       # override wins over the suffix
+    assert "MCX:CRUDEOIL#env" not in states
+
+
+def test_status_shows_suffix_and_hides_stale_strategy_keys(rig, monkeypatch):
+    from dataclasses import replace
+
+    from nse_alerts import control
+    from nse_alerts.config import Watch
+    from nse_alerts.state import SymbolState
+
+    cfg, provider, sent = rig
+    nifty = Watch(key="NIFTY1!", label="NIFTY1!", exchange="NSE",
+                  tv_symbol="NIFTY1!", yahoo_symbol="^NSEI")
+    crude = Watch(key="MCX:CRUDEOIL", label="CRUDEOIL", exchange="MCX",
+                  tv_symbol="MCX:CRUDEOIL", yahoo_symbol="BZ=F",
+                  strategy="env")
+    cfg = replace(cfg, watches=(nifty, crude))
+    store = StateStore(cfg.state_file)
+    store.put("NIFTY1!", SymbolState(last_side="UP",
+                                     last_processed_bar="2026-09-29T15:25:00"))
+    store.put("MCX:CRUDEOIL#env", SymbolState(
+        last_side="DOWN", last_processed_bar="2026-09-29T23:20:00"))
+    store.put("MCX:CRUDEOIL#qqe", SymbolState(          # stale from the qqe era
+        last_side="UP", last_processed_bar="2026-09-29T21:05:00"))
+    replies: list[str] = []
+    monkeypatch.setattr(control, "send_telegram",
+                        lambda token, chat_id, text, **kw: replies.append(text))
+    monkeypatch.setattr(control, "fetch_updates",
+                        lambda token: [{"message": {"chat": {"id": 42},
+                                                    "text": "/status"}}])
+    assert app.run(cfg) == 0
+    text = replies[0]
+    assert "MCX:CRUDEOIL~env" in text                       # suffix visible
+    assert "MCX:CRUDEOIL#env" in text                       # current key shown
+    assert "MCX:CRUDEOIL#qqe" not in text                   # stale switch hidden
+
+
 def test_manual_dispatch_out_of_session_replies_with_note(rig, monkeypatch):
     """Pressing 'Run workflow' pre-market must prove the pipeline is alive."""
     from datetime import datetime

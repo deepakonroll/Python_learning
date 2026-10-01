@@ -19,7 +19,7 @@ import logging
 
 import requests
 
-from .config import STRATEGIES, Config, normalize_strategy
+from .config import STRATEGIES, Config, normalize_strategy, strategies_for
 from .notify import NotifyError, answer_callback, edit_message, send_telegram
 from .state import StateStore
 
@@ -214,11 +214,16 @@ def _status_text(store: StateStore, cfg: Config) -> str:
     source = "Telegram override" if override else "config default"
     lines = [(f"✅ Alerts: ON" if enabled else f"🛑 Alerts: OFF")]
     lines.append(f"🎯 Strategy: {eff} ({source})")
-    lines.append(f"🔭 Watching: {', '.join(w.key for w in cfg.watches)}")
-    watched = {w.key for w in cfg.watches}
+    watch_list = ", ".join(
+        w.key + (f"~{w.strategy}" if w.strategy else "") for w in cfg.watches)
+    lines.append(f"🔭 Watching: {watch_list}")
+    allowed: set[str] = set()                    # only CURRENT (watch, strategy)
+    for w in cfg.watches:                        # keys - stale switches hidden
+        for s in strategies_for(eff if override else (w.strategy or eff)):
+            allowed.add(w.key if s == "ema20" else f"{w.key}#{s}")
     for key in sorted(states):
-        if key.split("#", 1)[0] not in watched:
-            continue                            # unwatched symbol's stale state
+        if key not in allowed:
+            continue
         st = states[key]
         lines.append(f"📊 {key} side={st.last_side} · "
                      f"last bar {st.last_processed_bar or 'n/a'}")

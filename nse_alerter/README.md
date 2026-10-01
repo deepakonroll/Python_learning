@@ -1,6 +1,7 @@
 # Futures 5m Alerter — NIFTY (NSE) + Crude / Natural Gas (MCX) → Telegram
 
-**Instruments (`SYMBOLS=`, comma list — default: NIFTY + crude, NG off; add
+**Instruments (`SYMBOLS=`, comma list — default: `NIFTY1!` on the global
+`STRATEGY` (qqe) + `MCX:CRUDEOIL~env` on Magic Envelope, NG off; add
 `MCX:NATURALGAS` back any time to re-enable it):**
 
 | Watch | Exchange | Session (IST, Mon–Fri) | Data source |
@@ -17,6 +18,7 @@ though prices differ (USD vs INR). Exact MCX contracts come later via Kite (§6)
 | Value | Rule |
 |---|---|
 | **`qqe`** *(default)* | Ported **"QQE signals"** Pine script (colinmck): Wilders-RSI → smoothed ATR-of-RSI bands; alert when the trailing line flips across RSIndex → `BUY` (Long) / `SELL` (Short). Smoother, fewer whipsaws (~5 flips/day on recent NIFTY data vs EMA20's ~11). |
+| `env` | **Magic Envelope** port: SMA20 ± `ENVELOPE_PERCENT` band (0.2%); a *full bar* beyond the band flips the side (carry-forward). Backtest on a month of 5m bars: **crude 5.3 flips/day (3–7, no dead days)**, NIFTY 0.5/day — tune per symbol. Attach per-watch with `SYMBOLS … ~env` or run globally via `/strategy env`. |
 | `ema20` | The original rule: 5m close flips below→above EMA20 → `BUY`, above→below → `SELL`. |
 | `both` | Both engines run side by side with **independent dedupe state** (`NIFTY1!` and `NIFTY1!#qqe`), one daily heartbeat. |
 
@@ -39,7 +41,7 @@ nse_alerter/
 │   ├── notify.py         # Telegram sender
 │   ├── config.py         # env-driven config
 │   └── providers/        # tv (TradingView futures) → yahoo (spot proxy) → kite (later)
-└── tests/                # 91 offline tests: `python -m pytest`
+└── tests/                # 119 offline tests: `python -m pytest`
 ```
 
 ## 1. Install

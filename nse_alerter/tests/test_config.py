@@ -9,7 +9,8 @@ from tests.conftest import make_config
 
 def _load(monkeypatch, **env):
     monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: None)
-    for key in ("STRATEGY", "QQE_RSI_PERIOD", "QQE_SF", "QQE_FACTOR", "SYMBOLS"):
+    for key in ("STRATEGY", "QQE_RSI_PERIOD", "QQE_SF", "QQE_FACTOR", "SYMBOLS",
+                "ENVELOPE_LEN", "ENVELOPE_PERCENT", "ENVELOPE_EXPONENTIAL"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -53,6 +54,8 @@ def test_default_symbols_is_nifty_plus_crude_ng_off(monkeypatch):
     assert [w.key for w in cfg.watches] == ["NIFTY1!", "MCX:CRUDEOIL"]
     assert cfg.symbol == "NIFTY1!"                     # primary = first watch
     assert cfg.yahoo_symbol == "^NSEI"
+    assert cfg.watches[0].strategy is None             # NIFTY follows STRATEGY
+    assert cfg.watches[1].strategy == "env"            # crude runs Magic Envelope
     assert cfg.watches[1].exchange == "MCX"
     assert cfg.watches[1].yahoo_symbol == "BZ=F"        # Brent proxy built in
 
@@ -81,3 +84,33 @@ def test_parse_watches_unknown_bare_symbol_rejected():
 
     with pytest.raises(ConfigError, match="EXCHANGE:SYMBOL"):
         parse_watches("BANANA1!")
+
+
+def test_per_watch_strategy_suffix_parsing():
+    from nse_alerts.config import parse_watches
+
+    ws = parse_watches("NIFTY1!,MCX:CRUDEOIL~env,MCX:GOLD~envelope>GC=F")
+    assert ws[0].strategy is None
+    assert ws[1].strategy == "env" and ws[1].key == "MCX:CRUDEOIL"   # suffix not in key
+    assert ws[1].tv_symbol == "MCX:CRUDEOIL"                          # fetch symbol clean
+    assert ws[2].strategy == "env" and ws[2].yahoo_symbol == "GC=F"   # alias + proxy combo
+
+    with pytest.raises(ConfigError, match="per-watch strategy"):
+        parse_watches("MCX:CRUDEOIL~macd")
+
+
+def test_envelope_params_validated(monkeypatch):
+    cfg = _load(monkeypatch, ENVELOPE_LEN="30", ENVELOPE_PERCENT="0.5",
+                ENVELOPE_EXPONENTIAL="true")
+    assert (cfg.envelope_len, cfg.envelope_percent, cfg.envelope_exponential) \
+        == (30, 0.5, True)
+    with pytest.raises(ConfigError, match="ENVELOPE_PERCENT"):
+        _load(monkeypatch, ENVELOPE_PERCENT="0")
+    with pytest.raises(ConfigError, match="ENVELOPE_EXPONENTIAL"):
+        _load(monkeypatch, ENVELOPE_EXPONENTIAL="maybe")
+
+
+def test_env_strategy_global_and_alias(monkeypatch):
+    assert _load(monkeypatch, STRATEGY="env").active_strategies() == ["env"]
+    assert _load(monkeypatch, STRATEGY="envelope").active_strategies() == ["env"]
+    assert _load(monkeypatch, STRATEGY="magic").active_strategies() == ["env"]

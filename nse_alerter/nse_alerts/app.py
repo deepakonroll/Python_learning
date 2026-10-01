@@ -14,7 +14,7 @@ import os
 import sys
 from datetime import date, datetime, time
 
-from .config import INTERVAL_MINUTES, Config, ConfigError
+from .config import INTERVAL_MINUTES, Config, ConfigError, strategies_for
 from .control import effective_strategy, process_commands
 from .market_hours import IST, in_session, now_ist, session_bounds
 from .notify import NotifyError, ping_message, send_telegram
@@ -119,11 +119,15 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         log.info("alerts disabled via Telegram /disable - nothing to do")
         return 0
 
-    # Telegram /strategy override beats env/default - mobile-first switching
+    # Telegram /strategy override beats env/default - mobile-first switching;
+    # a per-watch '~strategy' suffix (SYMBOLS) applies ONLY when no global
+    # override is active, so one tap still steers everything.
     effective = effective_strategy(cfg, store)
-    strategies = ["ema20", "qqe"] if effective == "both" else [effective]
+    override = store.get_control().get("strategy")
     log.debug("effective strategy: %s (watches: %s)",
-              effective, ", ".join(w.key for w in cfg.watches))
+              effective, ", ".join(
+                  w.key + (f"~{w.strategy}" if w.strategy else "")
+                  for w in cfg.watches))
 
     states = store.load()
     today = now.date().isoformat()
@@ -143,7 +147,9 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
             continue
         bar_iso = candles.index[-1].isoformat()
         watch_ok = False
-        for index, strat in enumerate(strategies):
+        strats = strategies_for(effective if override
+                                else (watch.strategy or effective))
+        for index, strat in enumerate(strats):
             # dedicated state key per (watch, strategy) so toggling never mixes
             key = watch.key if strat == "ema20" else f"{watch.key}#{strat}"
             stored = states.get(key)
@@ -170,6 +176,9 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
                     rsi_period=cfg.qqe_rsi_period,
                     sf=cfg.qqe_sf,
                     factor=cfg.qqe_factor,
+                    envelope_len=cfg.envelope_len,
+                    envelope_percent=cfg.envelope_percent,
+                    envelope_exponential=cfg.envelope_exponential,
                 )
             except SignalError as exc:
                 log.error("signal evaluation failed (%s, %s): %s",
@@ -197,7 +206,7 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
                     ))
                     if new_day and index == 0:
                         _heartbeat(cfg, current_side, bar_iso, source,
-                                   effective, watch.key)   # once/day per watch
+                                   strats[0], watch.key)  # once/day per watch
                 continue
 
             text = event.message()
@@ -313,21 +322,31 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
         return []
 
     pre = candles[candles.index < day_bars.index[0]]
-    # replay honours the same effective strategy as live runs (Telegram override)
-    eff = effective_strategy(cfg, StateStore(cfg.state_file))
+    # strategy precedence mirrors live: Telegram override > ~suffix > config
+    control = StateStore(cfg.state_file).get_control()
+    eff = control.get("strategy") or watch.strategy or cfg.strategy
     strat = "ema20" if eff == "both" else eff       # replay walks the primary engine
     label = STRATEGY_LABELS.get(strat, strat)
     print(f"Replay {watch.key} · {target.isoformat()} · {cfg.interval} "
           f"{label} · feed={source} · {len(day_bars)} bars that day"
           + ("  [strategy=both -> showing ema20]" if eff == "both" else ""))
-    if len(pre) < (cfg.ema_len + 2 if strat == "ema20" else 72):
+    if strat == "env":
+        min_pre = cfg.envelope_len + 2
+    elif strat == "ema20":
+        min_pre = cfg.ema_len + 2
+    else:
+        min_pre = 72                               # QQE warm-up
+    if len(pre) < min_pre:
         print(f"insufficient warm-up before the session ({len(pre)} bars) - "
               f"try DATA_PROVIDER=yahoo (deeper history)")
         return []
 
     kwargs = dict(symbol=watch.key, ema_len=cfg.ema_len, strategy=strat,
                   rsi_period=cfg.qqe_rsi_period, sf=cfg.qqe_sf,
-                  factor=cfg.qqe_factor, source=source)
+                  factor=cfg.qqe_factor, source=source,
+                  envelope_len=cfg.envelope_len,
+                  envelope_percent=cfg.envelope_percent,
+                  envelope_exponential=cfg.envelope_exponential)
     _, entry = evaluate(pre, prev_side=None, **kwargs)
     print(f"entering side: {entry}")
 

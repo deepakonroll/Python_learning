@@ -27,8 +27,9 @@ INTERVAL_MINUTES: dict[str, int] = {
 }
 
 DATA_PROVIDERS = ("auto", "tv", "yahoo", "kite")
-STRATEGIES = ("qqe", "ema20", "both")          # qqe = default (QQE signals port)
-STRATEGY_ALIASES = {"ema": "ema20", "qqe-signals": "qqe"}
+STRATEGIES = ("qqe", "ema20", "both", "env")      # qqe default; env = Magic Envelope
+STRATEGY_ALIASES = {"ema": "ema20", "qqe-signals": "qqe",
+                    "envelope": "env", "magic": "env"}
 
 
 @dataclass(frozen=True)
@@ -40,12 +41,14 @@ class Watch:
     exchange   NSE | MCX - picks the trading session window
     tv_symbol  what the TradingView provider fetches ('EXCH:SYM' is parsed there)
     yahoo_symbol  free proxy (e.g. BZ=F) or None when no proxy exists
+    strategy   per-watch engine from the '~suffix' (None = follow global)
     """
     key: str
     label: str
     exchange: str
     tv_symbol: str
     yahoo_symbol: str | None = None
+    strategy: str | None = None
 
 
 # label -> (exchange, yahoo proxy) for bare symbols typed in SYMBOLS
@@ -55,17 +58,21 @@ DEFAULT_WATCHES: dict[str, tuple[str, str | None]] = {
     "CRUDEOILM": ("MCX", "BZ=F"),
     "NATURALGAS": ("MCX", "NG=F"),      # Henry Hub
 }
-SYMBOLS_DEFAULT = "NIFTY1!,MCX:CRUDEOIL"   # NG off by default - add
-                                           # MCX:NATURALGAS (or set the repo
-                                           # Variable SYMBOLS) to re-enable
+SYMBOLS_DEFAULT = "NIFTY1!,MCX:CRUDEOIL~env"  # crude runs Magic Envelope (backtest
+                                             # 5.3/day at ENVELOPE_PERCENT=0.2),
+                                             # NIFTY follows STRATEGY (qqe); NG off
 
 
 def parse_watches(raw: str) -> tuple[Watch, ...]:
-    """'NIFTY1!,MCX:CRUDEOIL>BZ=F,...' -> Watch tuple.
+    """'NIFTY1!,MCX:CRUDEOIL~env>BZ=F,...' -> Watch tuple.
 
-    Entry forms:  SYMBOL            (must be in DEFAULT_WATCHES)
-                  EXCHANGE:SYMBOL   (proxy from DEFAULT_WATCHES if known)
-                  EXCHANGE:SYMBOL>YAHOO_PROXY   (fully explicit)
+    Entry forms:  SYMBOL                      (must be in DEFAULT_WATCHES)
+                  EXCHANGE:SYMBOL             (proxy from DEFAULT_WATCHES if known)
+                  EXCHANGE:SYMBOL>YAHOO_PROXY (fully explicit)
+                  ...~STRATEGY                 (optional per-watch engine:
+                                                qqe | ema20 | both | env;
+                                                without it the watch follows
+                                                the global strategy)
     """
     watches: list[Watch] = []
     for part in raw.split(","):
@@ -74,11 +81,21 @@ def parse_watches(raw: str) -> tuple[Watch, ...]:
             continue
         tv_part, _, proxy = part.partition(">")
         proxy = proxy.strip() or None
-        if ":" in tv_part:
-            exchange, label = tv_part.split(":", 1)
+        base_part, _, strat_raw = tv_part.partition("~")
+        strat_raw = strat_raw.strip().lower()
+        if strat_raw:
+            strategy = normalize_strategy(strat_raw)
+            if strategy is None:
+                raise ConfigError(
+                    f"unknown per-watch strategy {strat_raw!r} in {part!r} - "
+                    f"use ~qqe | ~ema20 | ~both | ~env")
+        else:
+            strategy = None
+        if ":" in base_part:
+            exchange, label = base_part.split(":", 1)
             exchange = exchange.upper()
         else:
-            label = tv_part
+            label = base_part
             known = DEFAULT_WATCHES.get(label)
             if known is None:
                 raise ConfigError(
@@ -90,8 +107,9 @@ def parse_watches(raw: str) -> tuple[Watch, ...]:
             proxy = known[1] if known else None
         if not label:
             raise ConfigError(f"empty symbol in SYMBOLS={raw!r}")
-        watches.append(Watch(key=tv_part, label=label, exchange=exchange,
-                             tv_symbol=tv_part, yahoo_symbol=proxy))
+        watches.append(Watch(key=base_part, label=label, exchange=exchange,
+                             tv_symbol=base_part, yahoo_symbol=proxy,
+                             strategy=strategy))
     if not watches:
         raise ConfigError("SYMBOLS produced no watches")
     return tuple(watches)
@@ -101,6 +119,13 @@ def normalize_strategy(value: str) -> str | None:
     """Canonical strategy name, or None when invalid ('' -> None)."""
     canonical = STRATEGY_ALIASES.get(value, value)
     return canonical if canonical in STRATEGIES else None
+
+
+def strategies_for(effective: str) -> list[str]:
+    """Engines to run for an effective strategy name ('both' expands)."""
+    if effective == "both":
+        return ["ema20", "qqe"]
+    return [effective]
 
 
 class ConfigError(RuntimeError):
@@ -116,10 +141,13 @@ class Config:
     ema_len: int                # 20
     lookback_bars: int          # how many bars to fetch (EMA warm-up)
     data_provider: str          # auto | tv | yahoo | kite
-    strategy: str               # qqe | ema20 | both  (active strategies)
+    strategy: str               # qqe | ema20 | both | env  (global default)
     qqe_rsi_period: int
     qqe_sf: int
     qqe_factor: float
+    envelope_len: int            # Magic Envelope: SMA/EMA length
+    envelope_percent: float      # band width in percent (0.2 = +/-0.2%)
+    envelope_exponential: bool   # EMA basis instead of SMA
     telegram_token: str | None
     telegram_chat_id: str | None
     kite_api_key: str | None
@@ -130,9 +158,7 @@ class Config:
 
     def active_strategies(self) -> list[str]:
         """Which engines run this pass, primary first (heartbeat uses [0])."""
-        if self.strategy == "both":
-            return ["ema20", "qqe"]
-        return [self.strategy]
+        return strategies_for(self.strategy)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -169,6 +195,17 @@ def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
     if value <= minimum:
         raise ConfigError(f"{name}={value} must be > {minimum}")
     return value
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = _env(name).lower()
+    if not raw:
+        return default
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    raise ConfigError(f"{name}={raw!r} is not a boolean (true/false)")
 
 
 def _parse_holidays(raw: str) -> frozenset[date]:
@@ -222,6 +259,9 @@ def load_config() -> Config:
         qqe_rsi_period=_env_int("QQE_RSI_PERIOD", 14),
         qqe_sf=_env_int("QQE_SF", 5),
         qqe_factor=_env_float("QQE_FACTOR", 4.238),
+        envelope_len=_env_int("ENVELOPE_LEN", 20, minimum=2),
+        envelope_percent=_env_float("ENVELOPE_PERCENT", 0.2),
+        envelope_exponential=_env_bool("ENVELOPE_EXPONENTIAL", False),
         telegram_token=_env("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=_env("TELEGRAM_CHAT_ID") or None,
         kite_api_key=_env("KITE_API_KEY") or None,
