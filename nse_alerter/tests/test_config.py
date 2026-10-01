@@ -48,14 +48,17 @@ def test_state_keys_are_per_strategy():
 
 # --- SYMBOLS watch list -------------------------------------------------------
 
-def test_default_symbols_is_nifty_plus_mcx_pair(monkeypatch):
+def test_default_symbols_is_nifty_plus_crude_ng_off(monkeypatch):
     cfg = _load(monkeypatch)
-    assert [w.key for w in cfg.watches] == ["NIFTY1!", "MCX:CRUDEOIL", "MCX:NATURALGAS"]
+    assert [w.key for w in cfg.watches] == ["NIFTY1!", "MCX:CRUDEOIL"]
     assert cfg.symbol == "NIFTY1!"                     # primary = first watch
     assert cfg.yahoo_symbol == "^NSEI"
     assert cfg.watches[1].exchange == "MCX"
     assert cfg.watches[1].yahoo_symbol == "BZ=F"        # Brent proxy built in
-    assert cfg.watches[2].yahoo_symbol == "NG=F"        # Henry Hub proxy
+
+    # re-enabling NG stays a pure config change:
+    from nse_alerts.config import parse_watches
+    assert parse_watches("NIFTY1!,MCX:CRUDEOIL,MCX:NATURALGAS")[2].yahoo_symbol == "NG=F"
 
 
 def test_symbols_env_overrides(monkeypatch):

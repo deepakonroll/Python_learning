@@ -55,4 +55,4 @@ jobs:
           # Actions > Variables: STRATEGY = qqe | ema20 | both (default qqe)
           STRATEGY: ${{ vars.STRATEGY || 'qqe' }}
           # Watch list (comma list, optional >yahoo-proxy, default all three):
-          SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!,MCX:CRUDEOIL,MCX:NATURALGAS' }}
+          SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!,MCX:CRUDEOIL' }}

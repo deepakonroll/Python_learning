@@ -55,7 +55,9 @@ DEFAULT_WATCHES: dict[str, tuple[str, str | None]] = {
     "CRUDEOILM": ("MCX", "BZ=F"),
     "NATURALGAS": ("MCX", "NG=F"),      # Henry Hub
 }
-SYMBOLS_DEFAULT = "NIFTY1!,MCX:CRUDEOIL,MCX:NATURALGAS"
+SYMBOLS_DEFAULT = "NIFTY1!,MCX:CRUDEOIL"   # NG off by default - add
+                                           # MCX:NATURALGAS (or set the repo
+                                           # Variable SYMBOLS) to re-enable
 
 
 def parse_watches(raw: str) -> tuple[Watch, ...]:

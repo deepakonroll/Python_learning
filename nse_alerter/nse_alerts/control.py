@@ -215,7 +215,10 @@ def _status_text(store: StateStore, cfg: Config) -> str:
     lines = [(f"✅ Alerts: ON" if enabled else f"🛑 Alerts: OFF")]
     lines.append(f"🎯 Strategy: {eff} ({source})")
     lines.append(f"🔭 Watching: {', '.join(w.key for w in cfg.watches)}")
+    watched = {w.key for w in cfg.watches}
     for key in sorted(states):
+        if key.split("#", 1)[0] not in watched:
+            continue                            # unwatched symbol's stale state
         st = states[key]
         lines.append(f"📊 {key} side={st.last_side} · "
                      f"last bar {st.last_processed_bar or 'n/a'}")

@@ -1,6 +1,7 @@
 # Futures 5m Alerter — NIFTY (NSE) + Crude / Natural Gas (MCX) → Telegram
 
-**Instruments (`SYMBOLS=`, comma list — default watches all three):**
+**Instruments (`SYMBOLS=`, comma list — default: NIFTY + crude, NG off; add
+`MCX:NATURALGAS` back any time to re-enable it):**
 
 | Watch | Exchange | Session (IST, Mon–Fri) | Data source |
 |---|---|---|---|

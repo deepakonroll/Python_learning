@@ -395,6 +395,28 @@ def test_status_lists_every_watch(rig, monkeypatch):
     assert replies and "🔭 Watching: NIFTY1!" in replies[0]
 
 
+def test_status_hides_unwatched_symbols_stale_state(rig, monkeypatch):
+    """NG removed from SYMBOLS -> its cached state must not appear in /status."""
+    from nse_alerts import control
+    from nse_alerts.state import SymbolState
+
+    cfg, provider, sent = rig                                # watches only NIFTY1!
+    store = StateStore(cfg.state_file)
+    store.put("NIFTY1!", SymbolState(last_side="UP",
+                                     last_processed_bar="2026-09-29T15:25:00"))
+    store.put("MCX:NATURALGAS#qqe", SymbolState(last_side="DOWN",
+                                                last_processed_bar="2026-09-29T23:20:00"))
+    replies: list[str] = []
+    monkeypatch.setattr(control, "send_telegram",
+                        lambda token, chat_id, text, **kw: replies.append(text))
+    monkeypatch.setattr(control, "fetch_updates",
+                        lambda token: [{"message": {"chat": {"id": 42},
+                                                    "text": "/status"}}])
+    assert app.run(cfg) == 0
+    assert replies and "NIFTY1!" in replies[0]
+    assert "NATURALGAS" not in replies[0]                   # hidden as unwatched
+
+
 def test_manual_dispatch_out_of_session_replies_with_note(rig, monkeypatch):
     """Pressing 'Run workflow' pre-market must prove the pipeline is alive."""
     from datetime import datetime
