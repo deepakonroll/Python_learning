@@ -55,7 +55,7 @@ def test_default_symbols_is_nifty_plus_crude_ng_off(monkeypatch):
     assert [w.key for w in cfg.watches] == ["NIFTY1!", "MCX:CRUDEOIL"]
     assert cfg.symbol == "NIFTY1!"                     # primary = first watch
     assert cfg.yahoo_symbol == "^NSEI"
-    assert cfg.watches[0].strategy is None             # NIFTY follows STRATEGY
+    assert cfg.watches[0].strategy == "env"            # NIFTY on BLUE/RED cross
     assert cfg.watches[1].strategy == "env"            # crude runs Magic Envelope
     assert cfg.watches[1].exchange == "MCX"
     assert cfg.watches[1].yahoo_symbol == "BZ=F"        # Brent proxy built in

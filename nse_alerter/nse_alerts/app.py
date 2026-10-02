@@ -288,11 +288,15 @@ def _plan_card(cfg: Config, now: datetime) -> bool:
             "• Intraday only · one structure · first entry after 09:45\n"
             "• Filter: premium ≥ ₹15 · delta ≤ 0.35\n"
             "• Size: lots = ₹10,000 ÷ (premium × lot size)\n"
+            "• Loss ladder at your terminal: -7k = WARN (no new risk) · "
+            "-10k = EXIT all, session over\n"
             "• Exit: premium DOUBLES → exit ALL legs (order at fill)\n"
             "          else flat ALL by 15:15\n"
-            "• New legs only in profit · adjust only while ≥ -2k\n"
-            "• Hard flatten at -10k → session over\n"
-            "• Nifty watch: ⚔️ ±0.45% = NO averaging · 🔴 ±0.8% = trend day, "
+            "• In profit → roll strikes CLOSER · new legs only in profit\n"
+            "• Strangle OFF on 🔴 trend or BLUE/RED envelope cross · "
+            "directional only in cross direction · stop = reverse cross "
+            "or 15:15\n"
+            "• Tripwires: ⚔️ ±0.45% = NO averaging · 🔴 ±0.8% = trend day, "
             "no re-entry" + expiry)
     try:
         send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)

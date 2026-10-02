@@ -149,7 +149,9 @@ def evaluate(
                 f"RSI-ma {rsi_val:.1f} (RSI scale)")
     elif strategy == "env":
         lo_v, up_v = env_band
-        rule = (f"Env flipped {'LONG' if cur == 'UP' else 'SHORT'} · "
+        color = "BLUE" if cur == "UP" else "RED"
+        rule = (f"Env flipped {'LONG' if cur == 'UP' else 'SHORT'} "
+                f"({color} cross) · "
                 f"close {close:,.2f} · band {lo_v:,.2f}–{up_v:,.2f} "
                 f"(±{envelope_percent}%)")
     else:

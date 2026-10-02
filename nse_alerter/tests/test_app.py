@@ -640,6 +640,8 @@ def test_plan_card_once_per_day_and_no_manual_note(rig, monkeypatch):
     assert texts[0].startswith("📋 PLAN") and "NIFTY" in texts[0]
     assert "premium DOUBLES" in texts[0] and "15:15" in texts[0]
     assert "10,000" in texts[0] and "09:45" in texts[0]
+    assert "roll strikes CLOSER" in texts[0]           # new ladder rules
+    assert "-10k = EXIT" in texts[0]
 
     assert app.run(cfg) == 0                         # next tick, same day
     assert len(sent.messages) == 1                   # deduped

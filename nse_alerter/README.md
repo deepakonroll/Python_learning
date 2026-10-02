@@ -1,9 +1,9 @@
 # Futures 5m Alerter — NIFTY (NSE) + Crude / Natural Gas (MCX) → Telegram
 
-**Instruments (`SYMBOLS=`, comma list — default: `NIFTY1!` on the global
-`STRATEGY` (qqe) + `MCX:CRUDEOIL~env@17:00-22:00` on Magic Envelope — alerts
-gated to 17:00–22:05 IST — NG off; add
-`MCX:NATURALGAS` back any time to re-enable it):**
+**Instruments (`SYMBOLS=`, comma list — default: `NIFTY1!~env` +
+`MCX:CRUDEOIL~env@17:00-22:00`, both on Magic Envelope: NIFTY's BLUE/RED
+cross is the strangle regime switch; crude alerts gated 17:00–22:05 IST.
+NG off — add `MCX:NATURALGAS` back any time to re-enable it):**
 
 | Watch | Exchange | Session (IST, Mon–Fri) | Data source |
 |---|---|---|---|

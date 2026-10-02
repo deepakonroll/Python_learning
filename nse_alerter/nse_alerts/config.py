@@ -64,11 +64,11 @@ DEFAULT_WATCHES: dict[str, tuple[str, str | None]] = {
     "CRUDEOILM": ("MCX", "BZ=F"),
     "NATURALGAS": ("MCX", "NG=F"),      # Henry Hub
 }
-SYMBOLS_DEFAULT = "NIFTY1!,MCX:CRUDEOIL~env@17:00-22:00"  # crude: Magic Envelope
-                                             # (backtest 5.3/day at
-                                             # ENVELOPE_PERCENT=0.2), gated to
-                                             # 17:00-22:00 IST (+5 min grace);
-                                             # NIFTY follows STRATEGY (qqe); NG off
+SYMBOLS_DEFAULT = "NIFTY1!~env,MCX:CRUDEOIL~env@17:00-22:00"  # BOTH on Magic
+                                             # Envelope: NIFTY's BLUE/RED
+                                             # cross = strangle regime switch;
+                                             # crude gated 17:00-22:00 IST
+                                             # (+5 min close grace); NG off
 
 
 def parse_watches(raw: str) -> tuple[Watch, ...]:
