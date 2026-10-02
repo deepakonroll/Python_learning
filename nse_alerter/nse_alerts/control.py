@@ -215,7 +215,9 @@ def _status_text(store: StateStore, cfg: Config) -> str:
     lines = [(f"✅ Alerts: ON" if enabled else f"🛑 Alerts: OFF")]
     lines.append(f"🎯 Strategy: {eff} ({source})")
     watch_list = ", ".join(
-        w.key + (f"~{w.strategy}" if w.strategy else "") for w in cfg.watches)
+        w.key + (f"~{w.strategy}" if w.strategy else "")
+        + (f"@{w.session[0]:%H:%M}-{w.session[1]:%H:%M}" if w.session else "")
+        for w in cfg.watches)
     lines.append(f"🔭 Watching: {watch_list}")
     allowed: set[str] = set()                    # only CURRENT (watch, strategy)
     for w in cfg.watches:                        # keys - stale switches hidden

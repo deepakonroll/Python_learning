@@ -1,13 +1,14 @@
 # Futures 5m Alerter — NIFTY (NSE) + Crude / Natural Gas (MCX) → Telegram
 
 **Instruments (`SYMBOLS=`, comma list — default: `NIFTY1!` on the global
-`STRATEGY` (qqe) + `MCX:CRUDEOIL~env` on Magic Envelope, NG off; add
+`STRATEGY` (qqe) + `MCX:CRUDEOIL~env@17:00-22:00` on Magic Envelope — alerts
+gated to 17:00–22:05 IST — NG off; add
 `MCX:NATURALGAS` back any time to re-enable it):**
 
 | Watch | Exchange | Session (IST, Mon–Fri) | Data source |
 |---|---|---|---|
 | `NIFTY1!` — NIFTY futures | NSE | 09:15–15:35 | TradingView → `^NSEI` yahoo proxy |
-| `MCX:CRUDEOIL` — crude oil futures | MCX | 09:00–23:35 | yahoo `BZ=F` (Brent) — MCX is blocked for anonymous TV |
+| `MCX:CRUDEOIL` — crude oil futures | MCX | 09:00–23:35, **alerts gated 17:00–22:05** (`@17:00-22:00`) | yahoo `BZ=F` (Brent) — MCX is blocked for anonymous TV |
 | `MCX:NATURALGAS` — natural gas futures | MCX | 09:00–23:35 | yahoo `NG=F` (Henry Hub) — same reason |
 
 QQE is RSI-scale based, so Brent/Henry-Hub proxies track MCX closely even
@@ -36,12 +37,12 @@ nse_alerter/
 ├── nse_alerts/           # the package
 │   ├── app.py            # gate → fetch → evaluate → dedupe → send → save
 │   ├── signals.py        # EMA20 cross engine (the rule)
-│   ├── market_hours.py   # NSE 09:15–15:35 + MCX 09:00–23:35 IST, Mon–Fri
+│   ├── market_hours.py   # NSE 09:15–15:35 + MCX 09:00–23:35 IST, Mon–Fri · per-watch @windows
 │   ├── state.py          # JSON state store (exactly-once alerts)
 │   ├── notify.py         # Telegram sender
 │   ├── config.py         # env-driven config
 │   └── providers/        # tv (TradingView futures) → yahoo (spot proxy) → kite (later)
-└── tests/                # 119 offline tests: `python -m pytest`
+└── tests/                # 124 offline tests: `python -m pytest`
 ```
 
 ## 1. Install

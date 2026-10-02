@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+import pytest
+
 from nse_alerts.market_hours import IST, in_session, is_trading_day, now_ist
 
 
@@ -67,3 +69,40 @@ def test_mcx_open_before_nse_open():
 def test_unknown_exchange_falls_back_to_nse_session():
     assert not in_session(dt(2026, 9, 28, 20, 0), exchange="BSE")
     assert in_session(dt(2026, 9, 28, 10, 0), exchange="bse")   # case-insensitive
+
+
+# --- per-watch evaluation windows (@HH:MM-HH:MM in SYMBOLS) ------------------
+
+def test_parse_time_window_includes_close_grace():
+    from nse_alerts.market_hours import parse_time_window
+
+    open_t, close_t, grace = parse_time_window("17:00-22:00")
+    assert (open_t.hour, open_t.minute) == (17, 0)
+    assert (close_t.hour, close_t.minute) == (22, 0)
+    assert (grace.hour, grace.minute) == (22, 5)          # +5 min, like exchanges
+
+
+def test_parse_time_window_rejects_garbage():
+    from nse_alerts.market_hours import parse_time_window
+
+    with pytest.raises(ValueError, match="HH:MM"):
+        parse_time_window("5pm-10pm")
+    with pytest.raises(ValueError, match="HH:MM"):
+        parse_time_window("17:00")                        # no end half
+    with pytest.raises(ValueError, match="start before"):
+        parse_time_window("22:00-17:00")                  # reversed
+
+
+def test_in_session_watch_window_override():
+    from nse_alerts.market_hours import parse_time_window
+
+    evening = parse_time_window("17:00-22:00")            # crude's alert window
+    assert not in_session(dt(2026, 9, 28, 16, 59), bounds=evening)  # before it
+    assert in_session(dt(2026, 9, 28, 17, 0), bounds=evening)        # open exact
+    assert in_session(dt(2026, 9, 28, 20, 0), bounds=evening)        # inside
+    assert in_session(dt(2026, 9, 28, 22, 3), bounds=evening)        # close grace
+    assert not in_session(dt(2026, 9, 28, 22, 6), bounds=evening)    # past grace
+    assert not in_session(dt(2026, 9, 27, 18, 0), bounds=evening)    # Sunday
+    # the override narrows the exchange window for THIS watch only:
+    assert not in_session(dt(2026, 9, 28, 12, 0), bounds=evening)
+    assert in_session(dt(2026, 9, 28, 12, 0), exchange="MCX")  # MCX itself open

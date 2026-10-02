@@ -54,5 +54,5 @@ jobs:
           # Toggle strategies from repo Settings > Secrets and variables >
           # Actions > Variables: STRATEGY = qqe | ema20 | both (default qqe)
           STRATEGY: ${{ vars.STRATEGY || 'qqe' }}
-          # Watch list (comma list, optional >yahoo-proxy, default all three):
-          SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!,MCX:CRUDEOIL~env' }}
+          # Watch list (entry: SYM[~strategy][@HH:MM-HH:MM alert window][>proxy]):
+          SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!,MCX:CRUDEOIL~env@17:00-22:00' }}

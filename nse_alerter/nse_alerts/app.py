@@ -134,7 +134,8 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     ok = failed = 0
 
     for watch in cfg.watches:
-        if not dry_run and not in_session(now, cfg.holidays, watch.exchange):
+        if not dry_run and not in_session(now, cfg.holidays, watch.exchange,
+                                          watch.session):
             log.debug("outside %s session for %s (%s IST)",
                       watch.exchange, watch.key, now.strftime("%H:%M"))
             continue

@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, time
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from .market_hours import parse_time_window
 
 # App root = the nse_alerter/ folder (parent of the nse_alerts/ package).
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -42,6 +44,9 @@ class Watch:
     tv_symbol  what the TradingView provider fetches ('EXCH:SYM' is parsed there)
     yahoo_symbol  free proxy (e.g. BZ=F) or None when no proxy exists
     strategy   per-watch engine from the '~suffix' (None = follow global)
+    session    (open, close, grace) from the '@HH:MM-HH:MM' suffix -
+               evaluate/alert only inside this IST window (None = the full
+               exchange session)
     """
     key: str
     label: str
@@ -49,6 +54,7 @@ class Watch:
     tv_symbol: str
     yahoo_symbol: str | None = None
     strategy: str | None = None
+    session: tuple[time, time, time] | None = None
 
 
 # label -> (exchange, yahoo proxy) for bare symbols typed in SYMBOLS
@@ -58,8 +64,10 @@ DEFAULT_WATCHES: dict[str, tuple[str, str | None]] = {
     "CRUDEOILM": ("MCX", "BZ=F"),
     "NATURALGAS": ("MCX", "NG=F"),      # Henry Hub
 }
-SYMBOLS_DEFAULT = "NIFTY1!,MCX:CRUDEOIL~env"  # crude runs Magic Envelope (backtest
-                                             # 5.3/day at ENVELOPE_PERCENT=0.2),
+SYMBOLS_DEFAULT = "NIFTY1!,MCX:CRUDEOIL~env@17:00-22:00"  # crude: Magic Envelope
+                                             # (backtest 5.3/day at
+                                             # ENVELOPE_PERCENT=0.2), gated to
+                                             # 17:00-22:00 IST (+5 min grace);
                                              # NIFTY follows STRATEGY (qqe); NG off
 
 
@@ -73,6 +81,9 @@ def parse_watches(raw: str) -> tuple[Watch, ...]:
                                                 qqe | ema20 | both | env;
                                                 without it the watch follows
                                                 the global strategy)
+                  ...@HH:MM-HH:MM              (optional alert window, IST -
+                                                @17:00-22:00 gates the watch
+                                                to 17:00-22:05 Mon-Fri)
     """
     watches: list[Watch] = []
     for part in raw.split(","):
@@ -81,6 +92,15 @@ def parse_watches(raw: str) -> tuple[Watch, ...]:
             continue
         tv_part, _, proxy = part.partition(">")
         proxy = proxy.strip() or None
+        tv_part, _, window_raw = tv_part.partition("@")
+        window_raw = window_raw.strip()
+        if window_raw:
+            try:
+                session = parse_time_window(window_raw)
+            except ValueError as exc:
+                raise ConfigError(f"{exc} in {part!r}") from None
+        else:
+            session = None
         base_part, _, strat_raw = tv_part.partition("~")
         strat_raw = strat_raw.strip().lower()
         if strat_raw:
@@ -109,7 +129,7 @@ def parse_watches(raw: str) -> tuple[Watch, ...]:
             raise ConfigError(f"empty symbol in SYMBOLS={raw!r}")
         watches.append(Watch(key=base_part, label=label, exchange=exchange,
                              tv_symbol=base_part, yahoo_symbol=proxy,
-                             strategy=strategy))
+                             strategy=strategy, session=session))
     if not watches:
         raise ConfigError("SYMBOLS produced no watches")
     return tuple(watches)

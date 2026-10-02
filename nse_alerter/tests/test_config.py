@@ -58,6 +58,7 @@ def test_default_symbols_is_nifty_plus_crude_ng_off(monkeypatch):
     assert cfg.watches[1].strategy == "env"            # crude runs Magic Envelope
     assert cfg.watches[1].exchange == "MCX"
     assert cfg.watches[1].yahoo_symbol == "BZ=F"        # Brent proxy built in
+    assert cfg.watches[1].session is not None            # crude gated 17:00-22:00
 
     # re-enabling NG stays a pure config change:
     from nse_alerts.config import parse_watches
@@ -114,3 +115,19 @@ def test_env_strategy_global_and_alias(monkeypatch):
     assert _load(monkeypatch, STRATEGY="env").active_strategies() == ["env"]
     assert _load(monkeypatch, STRATEGY="envelope").active_strategies() == ["env"]
     assert _load(monkeypatch, STRATEGY="magic").active_strategies() == ["env"]
+
+
+def test_per_watch_session_window_parsing():
+    from nse_alerts.config import parse_watches
+
+    ws = parse_watches("NIFTY1!,MCX:CRUDEOIL~env@17:00-22:00")
+    assert ws[0].session is None                          # NIFTY keeps NSE hours
+    open_t, close_t, grace = ws[1].session                # crude gated 17:00-22:05
+    assert (open_t.hour, open_t.minute, close_t.hour, close_t.minute) == (17, 0, 22, 0)
+    assert (grace.hour, grace.minute) == (22, 5)
+    assert ws[1].key == "MCX:CRUDEOIL"                    # suffix stays out of key
+    assert ws[1].tv_symbol == "MCX:CRUDEOIL"              # fetch symbol clean
+    assert ws[1].strategy == "env"                        # '~env' still applies
+
+    with pytest.raises(ConfigError, match="HH:MM"):
+        parse_watches("MCX:CRUDEOIL@5pm-10pm")

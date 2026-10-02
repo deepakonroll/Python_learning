@@ -48,4 +48,4 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           STATE_FILE: ${{ github.workspace }}/nse_alerter/state.json
           STRATEGY: ${{ vars.STRATEGY || 'qqe' }}
-          SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!,MCX:CRUDEOIL~env' }}
+          SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!,MCX:CRUDEOIL~env@17:00-22:00' }}

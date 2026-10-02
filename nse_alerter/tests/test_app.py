@@ -570,3 +570,40 @@ def test_stale_window_never_fabricates_flips(rig):
     assert state.last_processed_bar == "2026-09-28T14:00:00"  # untouched
     assert state.last_side == "UP"
 
+
+def test_watch_session_window_overrides_exchange_hours(monkeypatch, tmp_path):
+    """'@17:00-22:00' gate: crude must NOT run at 12:00 (MCX open) but MUST
+    at 18:00 - each watch keeps its own clock, NIFTY still follows NSE."""
+    from datetime import datetime
+
+    from nse_alerts import control
+    from nse_alerts.config import Watch
+    from nse_alerts.market_hours import IST, parse_time_window
+
+    def run_at(when, tag):
+        sent = Recorder()
+        provider = FakeProvider(make_candles(falling(26)))
+        nifty = Watch(key="NIFTY1!", label="NIFTY1!", exchange="NSE",
+                      tv_symbol="NIFTY1!", yahoo_symbol="^NSEI")
+        crude = Watch(key="MCX:CRUDEOIL", label="CRUDEOIL", exchange="MCX",
+                      tv_symbol="MCX:CRUDEOIL", yahoo_symbol="BZ=F",
+                      session=parse_time_window("17:00-22:00"))
+        cfg = make_config(tmp_path, watches=(nifty, crude),
+                          state_file=tmp_path / f"{tag}.json")
+        monkeypatch.setattr(app, "now_ist", lambda: when)
+        monkeypatch.setattr(app, "build_providers", lambda c, watch=None: [provider])
+        monkeypatch.setattr(app, "send_telegram", sent)
+        monkeypatch.setattr(control, "fetch_updates", lambda token: [])
+        assert app.run(cfg) == 0
+        return provider, cfg
+
+    provider, cfg = run_at(datetime(2026, 9, 28, 12, 0, tzinfo=IST), "noon")
+    assert provider.calls == 1                               # NIFTY ran, crude gated
+    states = StateStore(cfg.state_file).load()
+    assert "NIFTY1!" in states and "MCX:CRUDEOIL" not in states
+
+    provider, cfg = run_at(datetime(2026, 9, 28, 18, 0, tzinfo=IST), "eve")
+    assert provider.calls == 1                               # NSE shut, crude window
+    states = StateStore(cfg.state_file).load()
+    assert "MCX:CRUDEOIL" in states and "NIFTY1!" not in states
+
