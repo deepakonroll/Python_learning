@@ -639,8 +639,8 @@ def test_plan_card_once_per_day_and_no_manual_note(rig, monkeypatch):
     assert len(texts) == 1                           # card ONLY - no note
     assert texts[0].startswith("📋 PLAN") and "NIFTY" in texts[0]
     assert "premium DOUBLES" in texts[0] and "15:15" in texts[0]
-    assert "10,000" in texts[0] and "09:45" in texts[0]
-    assert "roll strikes CLOSER" in texts[0]           # new ladder rules
+    assert "1 lot" in texts[0] and "BLUE cross" in texts[0]
+    assert "PAUSED" in texts[0]                      # pilot card
     assert "-10k = EXIT" in texts[0]
 
     assert app.run(cfg) == 0                         # next tick, same day
@@ -656,7 +656,7 @@ def test_plan_card_once_per_day_and_no_manual_note(rig, monkeypatch):
 
 
 def test_plan_card_weekday_rotation_and_expiry_line(rig, monkeypatch):
-    """Tue = Nifty expiry (stop rules shown); Wed = Sensex regular."""
+    """Pilot: NIFTY header every day; Tue shows the gamma warning."""
     from datetime import datetime
 
     from nse_alerts import control
@@ -670,14 +670,14 @@ def test_plan_card_weekday_rotation_and_expiry_line(rig, monkeypatch):
     assert app.run(cfg) == 0
     text = sent.messages[-1][2]
     assert "NIFTY" in text and "EXPIRY DAY" in text
-    assert "no SL-free" in text                      # expiry stop supersession
+    assert "highest gamma" in text                   # expiry-day warning
 
     monkeypatch.setattr(app, "now_ist",
                         lambda: datetime(2026, 9, 30, 8, 50, tzinfo=IST))  # Wed
     assert app.run(cfg) == 0
     text = sent.messages[-1][2]
-    assert "SENSEX" in text and "EXPIRY DAY" not in text
-    assert "Thursday expiry" in text
+    assert "NIFTY" in text and "SENSEX" not in text   # pilot: NIFTY every day
+    assert "5 days to Tuesday" in text
 
 
 def test_trend_tripwires_zone_then_trend_fire_once(monkeypatch, tmp_path):

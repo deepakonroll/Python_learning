@@ -265,12 +265,12 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     return 0
 
 
-_SESSION_BY_WEEKDAY = {                      # Nifty expiry Tue · Sensex Thu
-    0: ("NIFTY", "regular · 1 day to Tuesday expiry"),
+_SESSION_BY_WEEKDAY = {                      # pilot: NIFTY every day (nearest
+    0: ("NIFTY", "1 day to Tuesday expiry"),  # expiry = Tuesday)
     1: ("NIFTY", "EXPIRY DAY"),
-    2: ("SENSEX", "regular · 1 day to Thursday expiry"),
-    3: ("SENSEX", "EXPIRY DAY"),
-    4: ("NIFTY", "regular · 3 days to Tuesday expiry"),
+    2: ("NIFTY", "5 days to Tuesday expiry"),
+    3: ("NIFTY", "4 days to Tuesday expiry"),
+    4: ("NIFTY", "3 days to Tuesday expiry"),
 }
 
 
@@ -281,23 +281,19 @@ def _plan_card(cfg: Config, now: datetime) -> bool:
     if not (cfg.telegram_token and cfg.telegram_chat_id):
         return False
     instrument, session = _SESSION_BY_WEEKDAY[now.weekday()]
-    expiry = ("\n• EXPIRY: the premium-doubles stop applies as usual "
-              "(no SL-free runs) · adjust from strength only"
+    expiry = ("\n• EXPIRY DAY: nearest-expiry ATM = highest gamma — "
+              "same rules, no exceptions"
               if "EXPIRY" in session else "")
     text = (f"📋 PLAN · {now:%a %d %b} · {instrument} — {session}\n"
-            "• Intraday only · one structure · first entry after 09:45\n"
-            "• Filter: premium ≥ ₹15 · delta ≤ 0.35\n"
-            "• Size: lots = ₹10,000 ÷ (premium × lot size)\n"
-            "• Loss ladder at your terminal: -7k = WARN (no new risk) · "
-            "-10k = EXIT all, session over\n"
-            "• Exit: premium DOUBLES → exit ALL legs (order at fill)\n"
-            "          else flat ALL by 15:15\n"
-            "• In profit → roll strikes CLOSER · new legs only in profit\n"
-            "• Strangle OFF on 🔴 trend or BLUE/RED envelope cross · "
-            "directional only in cross direction · stop = reverse cross "
-            "or 15:15\n"
-            "• Tripwires: ⚔️ ±0.45% = NO averaging · 🔴 ±0.8% = trend day, "
-            "no re-entry" + expiry)
+            "• PILOT: envelope-only · strangles PAUSED · 30 days\n"
+            "• BLUE cross → sell ATM PE · RED cross → sell ATM CE (1 lot)\n"
+            "• Entry ≤ 2 bars after the alert · ATM = nearest 50-pt strike\n"
+            "• Exit: REVERSE cross or flat ALL by 15:15, whichever first\n"
+            "• Backstop: premium DOUBLES → exit (order at fill)\n"
+            "• Ladder at your terminal: -7k = WARN · -10k = EXIT, session over\n"
+            "• Max 2 trades/day · journal every trade · no strangles, no adds\n"
+            "• Tripwires: ⚔️ ±0.45% = context · 🔴 ±0.8% = trend day"
+            + expiry)
     try:
         send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
     except NotifyError as exc:
