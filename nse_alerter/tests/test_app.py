@@ -621,7 +621,7 @@ def test_watch_session_window_overrides_exchange_hours(monkeypatch, tmp_path):
 
 
 def test_plan_card_once_per_day_and_no_manual_note(rig, monkeypatch):
-    """First run in 08:45-09:00 = plan card (not the manual note), once/day."""
+    """First run in 08:45-09:10 = plan card (not the manual note), once/day."""
     from datetime import datetime
 
     from nse_alerts import control
@@ -643,6 +643,14 @@ def test_plan_card_once_per_day_and_no_manual_note(rig, monkeypatch):
 
     assert app.run(cfg) == 0                         # next tick, same day
     assert len(sent.messages) == 1                   # deduped
+
+    # CI-startup grace: a dispatch TRIGGERED at 08:59 that EXECUTES at 09:03
+    # (next Monday here) must still card; the manual note must stay quiet.
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 10, 5, 9, 3, tzinfo=IST))
+    assert app.run(cfg) == 0
+    assert len(sent.messages) == 2
+    assert sent.messages[-1][2].startswith("📋 PLAN")
 
 
 def test_plan_card_weekday_rotation_and_expiry_line(rig, monkeypatch):

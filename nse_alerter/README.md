@@ -118,10 +118,12 @@ python main.py --verbose                 # debug logging
   09:00 open** while every session is closed sends `🧪 manual run · … out of
   session` — instant proof-of-life. Scheduled runs, external-cron dispatches
   and post-close runs stay quiet (no nightly notes).
-- **08:45 plan card**: the first run between 08:45–09:00 sends the day's
+- **08:45 plan card**: the first run between 08:45–09:10 sends the day's
   discipline card once per trading day (rotation, filter, size formula,
-  stop/exit rules). Primary tick: cron-job.org job `45,50,55 8 * * 1-5`
-  (Asia/Kolkata); the workflow schedule above backs it up.
+  stop/exit rules). The 09:10 end is a CI-startup grace — a dispatch triggered
+  at 08:59 only *executes* after ~09:00. Primary tick: cron-job.org job
+  `45,50,55 8 * * 1-5` (Asia/Kolkata); the 09:00/09:05 main-cron ticks and
+  the workflow schedule back it up.
 - **Trend tripwires (Nifty, all days)**: ±0.45% from the session open →
   `⚔️ … NO averaging`; ±0.8% → `🔴 TREND DAY … NO re-entry` — once per level
   per day (tuned on 60d of NIFTY 5m: 3/3 big days caught).

@@ -133,10 +133,12 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     today = now.date().isoformat()
     ok = failed = 0
 
-    # 08:45-09:00 window: one plan card per trading day (external cron ticks
-    # 45,50,55 8 + GitHub backup). Early return - every session is still shut,
-    # which also keeps the pre-open manual note quiet on card ticks.
-    if (not dry_run and time(8, 45) <= now.time() < time(9, 0)
+    # 08:45-09:10 window: one plan card per trading day (external cron ticks
+    # 45,50,55 8 + GitHub backup + the 09:00/09:05 main-cron ticks). The 09:10
+    # end is a CI-startup grace: a dispatch TRIGGERED at 08:59 only EXECUTES
+    # after ~09:00. Early return - sessions are shut, so the pre-open manual
+    # note stays quiet on card ticks.
+    if (not dry_run and time(8, 45) <= now.time() < time(9, 10)
             and is_trading_day(now.date(), cfg.holidays)
             and store.get_control().get("card_date") != today):
         if _plan_card(cfg, now):
@@ -255,7 +257,7 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         return 3
     if (ok == 0 and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
             and now.time() < session_bounds("MCX")[0]
-            and not (time(8, 45) <= now.time() < time(9, 0))):  # card window
+            and not (time(8, 45) <= now.time() < time(9, 10))):  # card window
         # Pre-open manual runs reply with proof of life. Post-close runs and the
         # external cron's own dispatches (also workflow_dispatch!) stay silent -
         # otherwise every dead-tail tick would spam a note.
@@ -275,7 +277,7 @@ _SESSION_BY_WEEKDAY = {                      # Nifty expiry Tue · Sensex Thu
 def _plan_card(cfg: Config, now: datetime) -> bool:
     """08:45 discipline card - static rules, no market data, so a flaky feed
     can never eat it. True = sent (the caller records card_date for the
-    once-per-day dedupe; failures retry on the next tick at 8:50, 8:55)."""
+    once-per-day dedupe; failures retry on the next tick at 8:50, 8:55, 9:00, 9:05)."""
     if not (cfg.telegram_token and cfg.telegram_chat_id):
         return False
     instrument, session = _SESSION_BY_WEEKDAY[now.weekday()]
