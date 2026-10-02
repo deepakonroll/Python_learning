@@ -56,8 +56,10 @@ def rig(monkeypatch, tmp_path):
 def test_first_run_records_baseline_and_sends_liveness_heartbeat(rig):
     cfg, provider, sent = rig
     assert app.run(cfg) == 0
-    assert len(sent.messages) == 1                          # heartbeat, NOT an alert
-    text = sent.messages[0][2]
+    plain = [m for m in sent.messages
+             if not m[2].startswith(("⚔️", "🔴"))]         # tripwires filtered
+    assert len(plain) == 1                          # heartbeat, NOT an alert
+    text = plain[0][2]
     assert "monitoring live" in text and "side=DOWN" in text
     assert "BUY" not in text and "SELL" not in text
     assert sent.markups[0] is None                          # menu buttons paused
@@ -73,30 +75,38 @@ def test_heartbeat_fires_only_once_per_trading_day(rig, monkeypatch):
     cfg, provider, sent = rig
     assert app.run(cfg) == 0                                # day 1 -> heartbeat
     assert app.run(cfg) == 0                                # same day -> silent
-    assert len(sent.messages) == 1
+    plain = [t for _, _, t in sent.messages
+             if not t.startswith(("⚔️", "🔴"))]             # tripwires filtered
+    assert len(plain) == 1
 
     monkeypatch.setattr(app, "now_ist",
                         lambda: datetime(2026, 9, 29, 13, 30, tzinfo=IST))  # Tuesday
     assert app.run(cfg) == 0                                # new day -> heartbeat
-    assert len(sent.messages) == 2
-    assert "29 Sep 2026" in sent.messages[1][2]
+    plain = [t for _, _, t in sent.messages
+             if not t.startswith(("⚔️", "🔴"))]
+    assert len(plain) == 2
+    assert "29 Sep 2026" in plain[1]
 
 
 def test_cross_sends_exactly_once_then_dedupes(rig):
     cfg, provider, sent = rig
     assert app.run(cfg) == 0                             # baseline: DOWN + heartbeat
-    assert len(sent.messages) == 1
-    assert "monitoring live" in sent.messages[0][2]
+    plain = [m for m in sent.messages
+             if not m[2].startswith(("⚔️", "🔴"))]         # tripwires filtered
+    assert len(plain) == 1
+    assert "monitoring live" in plain[0][2]
 
     provider.df = make_candles(falling(26) + rising(26))  # side flips to UP
     assert app.run(cfg) == 0
-    assert len(sent.messages) == 2                           # heartbeat + BUY
-    token, chat_id, text = sent.messages[1]
+    plain = [m for m in sent.messages if not m[2].startswith(("⚔️", "🔴"))]
+    assert len(plain) == 2                            # heartbeat + BUY
+    token, chat_id, text = plain[1]
     assert token == "test-token" and chat_id == "42"
     assert "BUY" in text and "EMA20" in text
 
     assert app.run(cfg) == 0                             # same data again
-    assert len(sent.messages) == 2                       # still just the two
+    plain = [m for m in sent.messages if not m[2].startswith(("⚔️", "🔴"))]
+    assert len(plain) == 2                            # still just the two
     state = StateStore(cfg.state_file).get(cfg.symbol)
     assert state.last_side == "UP"
     assert state.last_event_side == "BUY"
@@ -565,7 +575,9 @@ def test_stale_window_never_fabricates_flips(rig):
 
     assert app.run(cfg) == 0
     assert provider.calls == 1                                # fetch happened
-    assert sent.messages == []                                # no alert, no heartbeat
+    signals = [t for _, _, t in sent.messages
+               if not t.startswith(("⚔️", "🔴"))]             # tripwires filtered
+    assert signals == []                                     # no alert, no heartbeat
     state = StateStore(cfg.state_file).get(cfg.symbol)
     assert state.last_processed_bar == "2026-09-28T14:00:00"  # untouched
     assert state.last_side == "UP"
@@ -606,4 +618,96 @@ def test_watch_session_window_overrides_exchange_hours(monkeypatch, tmp_path):
     assert provider.calls == 1                               # NSE shut, crude window
     states = StateStore(cfg.state_file).load()
     assert "MCX:CRUDEOIL" in states and "NIFTY1!" not in states
+
+
+def test_plan_card_once_per_day_and_no_manual_note(rig, monkeypatch):
+    """First run in 08:45-09:00 = plan card (not the manual note), once/day."""
+    from datetime import datetime
+
+    from nse_alerts import control
+    from nse_alerts.market_hours import IST
+
+    cfg, provider, sent = rig
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 9, 28, 8, 46, tzinfo=IST))  # Mon
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setattr(control, "fetch_updates", lambda token: [])
+
+    assert app.run(cfg) == 0
+    assert provider.calls == 0                       # sessions still shut
+    texts = [t for _, _, t in sent.messages]
+    assert len(texts) == 1                           # card ONLY - no note
+    assert texts[0].startswith("📋 PLAN") and "NIFTY" in texts[0]
+    assert "premium DOUBLES" in texts[0] and "15:15" in texts[0]
+    assert "10,000" in texts[0] and "09:45" in texts[0]
+
+    assert app.run(cfg) == 0                         # next tick, same day
+    assert len(sent.messages) == 1                   # deduped
+
+
+def test_plan_card_weekday_rotation_and_expiry_line(rig, monkeypatch):
+    """Tue = Nifty expiry (stop rules shown); Wed = Sensex regular."""
+    from datetime import datetime
+
+    from nse_alerts import control
+    from nse_alerts.market_hours import IST
+
+    cfg, provider, sent = rig
+    monkeypatch.setattr(control, "fetch_updates", lambda token: [])
+
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 9, 29, 8, 50, tzinfo=IST))  # Tue
+    assert app.run(cfg) == 0
+    text = sent.messages[-1][2]
+    assert "NIFTY" in text and "EXPIRY DAY" in text
+    assert "no SL-free" in text                      # expiry stop supersession
+
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 9, 30, 8, 50, tzinfo=IST))  # Wed
+    assert app.run(cfg) == 0
+    text = sent.messages[-1][2]
+    assert "SENSEX" in text and "EXPIRY DAY" not in text
+    assert "Thursday expiry" in text
+
+
+def test_trend_tripwires_zone_then_trend_fire_once(monkeypatch, tmp_path):
+    """Nifty +0.60% -> ⚔️ only; same day no repeat; next day +0.96% -> both."""
+    from datetime import datetime
+
+    from nse_alerts import control
+    from nse_alerts.config import Watch
+    from nse_alerts.market_hours import IST
+
+    nifty = Watch(key="NIFTY1!", label="NIFTY1!", exchange="NSE",
+                  tv_symbol="NIFTY1!", yahoo_symbol="^NSEI")
+
+    def run_at(closes, when, tag):
+        sent = Recorder()
+        provider = FakeProvider(
+            make_candles(closes, start=f"{when:%Y-%m-%d} 09:15"))
+        cfg = make_config(tmp_path, watches=(nifty,),
+                          state_file=tmp_path / f"{tag}.json")
+        monkeypatch.setattr(app, "now_ist", lambda: when)
+        monkeypatch.setattr(app, "build_providers",
+                            lambda c, watch=None: [provider])
+        monkeypatch.setattr(app, "send_telegram", sent)
+        monkeypatch.setattr(control, "fetch_updates", lambda token: [])
+        assert app.run(cfg) == 0
+        return sent
+
+    monday = datetime(2026, 9, 28, 11, 30, tzinfo=IST)
+    sent = run_at([100 + i * 0.024 for i in range(26)], monday, "t")
+    zone = [t for _, _, t in sent.messages if t.startswith("⚔️")]
+    assert len(zone) == 1 and "NO averaging" in zone[0]
+    assert not [t for _, _, t in sent.messages if t.startswith("🔴")]
+
+    sent = run_at([100 + i * 0.024 for i in range(26)], monday, "t")
+    assert not [t for _, _, t in sent.messages if "⚔️" in t]   # deduped
+
+    tuesday = datetime(2026, 9, 29, 11, 30, tzinfo=IST)
+    sent = run_at([100 + i * 0.04 for i in range(26)], tuesday, "t")
+    zone = [t for _, _, t in sent.messages if t.startswith("⚔️")]
+    trend = [t for _, _, t in sent.messages if t.startswith("🔴")]
+    assert len(zone) == 1 and len(trend) == 1
+    assert "NO re-entry" in trend[0]
 

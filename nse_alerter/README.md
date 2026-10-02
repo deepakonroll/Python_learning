@@ -42,7 +42,7 @@ nse_alerter/
 │   ├── notify.py         # Telegram sender
 │   ├── config.py         # env-driven config
 │   └── providers/        # tv (TradingView futures) → yahoo (spot proxy) → kite (later)
-└── tests/                # 124 offline tests: `python -m pytest`
+└── tests/                # 127 offline tests: `python -m pytest`
 ```
 
 ## 1. Install
@@ -118,6 +118,13 @@ python main.py --verbose                 # debug logging
   09:00 open** while every session is closed sends `🧪 manual run · … out of
   session` — instant proof-of-life. Scheduled runs, external-cron dispatches
   and post-close runs stay quiet (no nightly notes).
+- **08:45 plan card**: the first run between 08:45–09:00 sends the day's
+  discipline card once per trading day (rotation, filter, size formula,
+  stop/exit rules). Primary tick: cron-job.org job `45,50,55 8 * * 1-5`
+  (Asia/Kolkata); the workflow schedule above backs it up.
+- **Trend tripwires (Nifty, all days)**: ±0.45% from the session open →
+  `⚔️ … NO averaging`; ±0.8% → `🔴 TREND DAY … NO re-entry` — once per level
+  per day (tuned on 60d of NIFTY 5m: 3/3 big days caught).
 - Exit codes: `0` ok/no-op · `1` config (e.g. missing Telegram creds) ·
   `2` Telegram failed (state not saved → auto-retry next minute) · `3` data failed.
 - Logs: console + `nse_alerter.log` (Task Scheduler has no console).

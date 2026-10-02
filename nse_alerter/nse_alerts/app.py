@@ -16,7 +16,7 @@ from datetime import date, datetime, time
 
 from .config import INTERVAL_MINUTES, Config, ConfigError, strategies_for
 from .control import effective_strategy, process_commands
-from .market_hours import IST, in_session, now_ist, session_bounds
+from .market_hours import IST, in_session, is_trading_day, now_ist, session_bounds
 from .notify import NotifyError, ping_message, send_telegram
 from .providers.base import DataProvider, ProviderError, completed_bars, filter_session
 from .providers.kite import KiteProvider
@@ -133,6 +133,16 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     today = now.date().isoformat()
     ok = failed = 0
 
+    # 08:45-09:00 window: one plan card per trading day (external cron ticks
+    # 45,50,55 8 + GitHub backup). Early return - every session is still shut,
+    # which also keeps the pre-open manual note quiet on card ticks.
+    if (not dry_run and time(8, 45) <= now.time() < time(9, 0)
+            and is_trading_day(now.date(), cfg.holidays)
+            and store.get_control().get("card_date") != today):
+        if _plan_card(cfg, now):
+            store.set_control({**store.get_control(), "card_date": today})
+        return 0
+
     for watch in cfg.watches:
         if not dry_run and not in_session(now, cfg.holidays, watch.exchange,
                                           watch.session):
@@ -147,6 +157,8 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
             failed += 1
             continue
         bar_iso = candles.index[-1].isoformat()
+        if not dry_run and watch.exchange == "NSE":
+            _trend_alerts(cfg, store, candles, now, today)
         watch_ok = False
         strats = strategies_for(effective if override
                                 else (watch.strategy or effective))
@@ -242,12 +254,94 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         log.error("no watch could be evaluated this run (%d failed)", failed)
         return 3
     if (ok == 0 and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-            and now.time() < session_bounds("MCX")[0]):
+            and now.time() < session_bounds("MCX")[0]
+            and not (time(8, 45) <= now.time() < time(9, 0))):  # card window
         # Pre-open manual runs reply with proof of life. Post-close runs and the
         # external cron's own dispatches (also workflow_dispatch!) stay silent -
         # otherwise every dead-tail tick would spam a note.
         _manual_note(cfg, effective, len(cfg.watches))
     return 0
+
+
+_SESSION_BY_WEEKDAY = {                      # Nifty expiry Tue · Sensex Thu
+    0: ("NIFTY", "regular · 1 day to Tuesday expiry"),
+    1: ("NIFTY", "EXPIRY DAY"),
+    2: ("SENSEX", "regular · 1 day to Thursday expiry"),
+    3: ("SENSEX", "EXPIRY DAY"),
+    4: ("NIFTY", "regular · 3 days to Tuesday expiry"),
+}
+
+
+def _plan_card(cfg: Config, now: datetime) -> bool:
+    """08:45 discipline card - static rules, no market data, so a flaky feed
+    can never eat it. True = sent (the caller records card_date for the
+    once-per-day dedupe; failures retry on the next tick at 8:50, 8:55)."""
+    if not (cfg.telegram_token and cfg.telegram_chat_id):
+        return False
+    instrument, session = _SESSION_BY_WEEKDAY[now.weekday()]
+    expiry = ("\n• EXPIRY: the premium-doubles stop applies as usual "
+              "(no SL-free runs) · adjust from strength only"
+              if "EXPIRY" in session else "")
+    text = (f"📋 PLAN · {now:%a %d %b} · {instrument} — {session}\n"
+            "• Intraday only · one structure · first entry after 09:45\n"
+            "• Filter: premium ≥ ₹15 · delta ≤ 0.35\n"
+            "• Size: lots = ₹10,000 ÷ (premium × lot size)\n"
+            "• Exit: premium DOUBLES → exit ALL legs (order at fill)\n"
+            "          else flat ALL by 15:15\n"
+            "• New legs only in profit · adjust only while ≥ -2k\n"
+            "• Hard flatten at -10k → session over\n"
+            "• Nifty watch: ⚔️ ±0.45% = NO averaging · 🔴 ±0.8% = trend day, "
+            "no re-entry" + expiry)
+    try:
+        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+    except NotifyError as exc:
+        log.error("plan card failed (%s) - next tick retries", exc)
+        return False
+    log.info("plan card sent (%s %s)", now.strftime("%a"), session)
+    return True
+
+
+def _trend_alerts(cfg: Config, store: StateStore, candles, now: datetime,
+                  today: str) -> None:
+    """Nifty distance-from-open tripwires (Nifty drives ALL days, Sensex
+    included - per the trading plan). ⚔️ 0.45% ~= the 2-strike zone: no
+    averaging. 🔴 0.8% = trend day: flatten path, no re-entry. Thresholds
+    tuned on 60d of NIFTY 5m (3/3 big days caught). One fire per level per
+    day; a failed send retries next run; failures never touch signal state."""
+    day = candles[candles.index.date == now.date()]
+    if day.empty:
+        return
+    open_px = float(day["Open"].iloc[0])
+    dev = (day["Close"] - open_px).abs() / open_px * 100.0
+    peak = float(dev.max())
+    at = dev.idxmax()
+    side = "up" if float(day["Close"].loc[at]) >= open_px else "down"
+    ctrl = store.get_control()
+    if ctrl.get("trend_date") != today:
+        ctrl = {**ctrl, "trend_date": today, "zone_sent": False,
+                "trend_sent": False}
+    updates = {}
+    if peak >= 0.45 and not ctrl.get("zone_sent") and _trend_send(
+            cfg, f"⚔️ NIFTY {peak:.2f}% from open ({side}) · ZONE\n"
+                 "if short: NO averaging · stops live · exits per plan"):
+        updates["zone_sent"] = True
+    if peak >= 0.8 and not ctrl.get("trend_sent") and _trend_send(
+            cfg, f"🔴 TREND DAY · NIFTY {peak:.2f}% from open ({side})\n"
+                 "flatten path · NO re-entry today"):
+        updates["trend_sent"] = True
+    if updates:
+        store.set_control({**ctrl, **updates})
+
+
+def _trend_send(cfg: Config, text: str) -> bool:
+    if not (cfg.telegram_token and cfg.telegram_chat_id):
+        return False
+    try:
+        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+    except NotifyError as exc:
+        log.warning("trend alert failed (%s) - will retry", exc)
+        return False
+    return True
 
 
 def _manual_note(cfg: Config, strategy: str, watch_count: int) -> None:
