@@ -42,7 +42,7 @@ nse_alerter/
 │   ├── notify.py         # Telegram sender
 │   ├── config.py         # env-driven config
 │   └── providers/        # tv (TradingView futures) → yahoo (spot proxy) → kite (later)
-└── tests/                # 127 offline tests: `python -m pytest`
+└── tests/                # 128 offline tests: `python -m pytest`
 ```
 
 ## 1. Install
@@ -176,7 +176,10 @@ Register-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Action $action -Trigge
 ```
 
 Outside market hours the task still fires but exits immediately (cheap no-op);
-weekends/holidays are skipped by `market_hours.py`. Check it with:
+weekends/holidays are skipped by `market_hours.py` — cloud runs carry the
+2026 NSE/BSE holiday list as the workflow `HOLIDAYS` default (repo Variable
+overrides; MCX trades some NSE-only holidays, which we conservatively skip).
+Check it with:
 
 ```powershell
 Get-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" | Get-ScheduledTaskInfo

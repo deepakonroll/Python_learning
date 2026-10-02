@@ -10,7 +10,8 @@ from tests.conftest import make_config
 def _load(monkeypatch, **env):
     monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: None)
     for key in ("STRATEGY", "QQE_RSI_PERIOD", "QQE_SF", "QQE_FACTOR", "SYMBOLS",
-                "ENVELOPE_LEN", "ENVELOPE_PERCENT", "ENVELOPE_EXPONENTIAL"):
+                "ENVELOPE_LEN", "ENVELOPE_PERCENT", "ENVELOPE_EXPONENTIAL",
+                "HOLIDAYS"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -98,6 +99,17 @@ def test_per_watch_strategy_suffix_parsing():
 
     with pytest.raises(ConfigError, match="per-watch strategy"):
         parse_watches("MCX:CRUDEOIL~macd")
+
+
+def test_holidays_parsed_and_validated(monkeypatch):
+    from datetime import date
+
+    cfg = _load(monkeypatch, HOLIDAYS="2026-10-02, 2026-10-20")
+    assert cfg.holidays == frozenset({date(2026, 10, 2), date(2026, 10, 20)})
+    assert _load(monkeypatch).holidays == frozenset()          # default: none
+
+    with pytest.raises(ConfigError, match="HOLIDAYS"):
+        _load(monkeypatch, HOLIDAYS="tomorrow")
 
 
 def test_envelope_params_validated(monkeypatch):
