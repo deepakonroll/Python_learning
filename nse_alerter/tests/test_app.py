@@ -672,7 +672,7 @@ def test_plan_card_weekday_rotation_and_expiry_line(rig, monkeypatch):
     text = sent.messages[-1][2]
     assert "NIFTY 0DTE STRANGLE" in text
     assert "09:45 alert" in text and "2×" in text and "15:15" in text
-    assert "envelope OFF" in text                    # pilot paused on Tue/Thu
+    assert "Envelope ON" in text                     # envelope runs Tue/Thu too
 
     monkeypatch.setattr(app, "now_ist",
                         lambda: datetime(2026, 9, 30, 8, 50, tzinfo=IST))  # Wed
@@ -820,9 +820,9 @@ def test_expiry_entry_alert_thursday_uses_sensex_grid(rig, monkeypatch):
     assert "15:15" in text
 
 
-def test_envelope_paused_on_strangle_days_and_resumes(rig, monkeypatch):
-    """Tue = strangle day: an envelope cross is re-baselined silently while
-    tripwires stay live; alerts resume Wednesday (pilot day)."""
+def test_envelope_alerts_fire_on_strangle_days_too(rig, monkeypatch):
+    """No pause: Tue/Thu ADD the 09:45 strangle alert but the envelope keeps
+    evaluating and alerting every day of the rotation."""
     from dataclasses import replace
     from datetime import datetime
 
@@ -843,21 +843,21 @@ def test_envelope_paused_on_strangle_days_and_resumes(rig, monkeypatch):
     assert not envelope_alerts()
     assert StateStore(cfg.state_file).get("NIFTY1!#env").last_side == "DOWN"
 
-    # Tuesday 11:30: cross to UP while paused -> NO alert, side resynced,
-    # tripwires still fire (the fire alarm survives the pause)
+    # Tuesday 11:30 (strangle day): the cross STILL alerts - no pause
     provider.df = make_candles(rising(60), start="2026-09-29 09:15")
     monkeypatch.setattr(app, "now_ist",
                         lambda: datetime(2026, 9, 29, 11, 30, tzinfo=IST))
     assert app.run(cfg) == 0
-    assert not envelope_alerts()                     # rotation: no entries
+    assert [t for t in envelope_alerts()
+            if t.startswith("BUY NIFTY1!")]          # DOWN -> UP fired on Tue
     assert StateStore(cfg.state_file).get("NIFTY1!#env").last_side == "UP"
-    assert [t for _, _, t in sent.messages if t.startswith("⚔️")]  # live
+    assert [t for _, _, t in sent.messages if t.startswith("⚔️")]  # tripwires
 
-    # Wednesday 11:30: pilot day -> the flip alerts normally
+    # Wednesday 11:30: pilot day unchanged
     provider.df = make_candles(falling(60), start="2026-09-30 09:15")
     monkeypatch.setattr(app, "now_ist",
                         lambda: datetime(2026, 9, 30, 11, 30, tzinfo=IST))
     assert app.run(cfg) == 0
     assert [t for t in envelope_alerts()
-            if t.startswith("SELL NIFTY1!")]          # UP -> DOWN fired
+            if t.startswith("SELL NIFTY1!")]         # UP -> DOWN fired
 

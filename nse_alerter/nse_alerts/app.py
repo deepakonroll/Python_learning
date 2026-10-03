@@ -154,7 +154,7 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     # indicative premiums + 2x stops + size + 15:15 square-off, once per day.
     # Entering the block skips this tick's scan (mirrors the plan card); a
     # failed send leaves the key unset so the next 5-min tick retries until
-    # 10:15. The envelope is paused on these days anyway (see watch loop).
+    # 10:15. The envelope itself runs every day - this only ADDS the strangle.
     instrument = (expiry.EXPIRY_ROTATION.get(now.weekday())
                   if is_trading_day(now.date(), cfg.holidays) else None)
     if (not dry_run and instrument
@@ -181,19 +181,9 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         bar_iso = candles.index[-1].isoformat()
         if not dry_run and watch.exchange == "NSE":
             _trend_alerts(cfg, store, candles, now, today)
-        resolved = effective if override else (watch.strategy or effective)
-        # Approved rotation: no envelope entries on strangle days (Tue/Thu).
-        # The watch still runs (tripwires + heartbeat stay live), but
-        # prev_side is dropped below so the side re-baselines silently
-        # instead of alerting a cross the owner must not trade. A manual
-        # /strategy override wins (explicit opt-in beats the rotation).
-        paused = (not dry_run and resolved == "env"
-                  and now.weekday() in expiry.EXPIRY_DAYS)
-        if paused:
-            log.info("envelope paused (%s strangle day) - %s resyncs silently",
-                     now.strftime("%a"), watch.key)
         watch_ok = False
-        strats = strategies_for(resolved)
+        strats = strategies_for(effective if override
+                                else (watch.strategy or effective))
         for index, strat in enumerate(strats):
             # dedicated state key per (watch, strategy) so toggling never mixes
             key = watch.key if strat == "ema20" else f"{watch.key}#{strat}"
@@ -209,7 +199,7 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
                             key, candles.index[-1], stored.last_processed_bar)
                 watch_ok = True
                 continue
-            prev_side = stored.last_side if (stored and not paused) else None
+            prev_side = stored.last_side if stored else None
             try:
                 event, current_side = evaluate(
                     candles,
@@ -235,10 +225,6 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
                 if stored is None:
                     log.info("baseline%s: %s [%s] side=%s (no alert on first run)",
                              " (dry-run, not saved)" if dry_run else "",
-                             key, strat, current_side)
-                elif paused:
-                    log.info("envelope paused - %s [%s] side resynced to %s "
-                             "(pause-day crosses never alert)",
                              key, strat, current_side)
                 else:
                     log.info("no cross - %s [%s] side=%s bar=%s",
@@ -319,19 +305,20 @@ def _plan_card(cfg: Config, now: datetime) -> bool:
         spec = expiry.EXPIRY_SPECS[instrument]
         text = (
             f"📋 PLAN · {now:%a %d %b} · {instrument} 0DTE STRANGLE day\n"
-            "• Rotation: envelope OFF today (NIFTY + crude) · strangle ON\n"
             f"• 09:45 alert → SELL 1-strike OTM CE + PE "
             f"(step {spec['step']} · lot {spec['lot']})\n"
             "• Size ₹10k ÷ (premium × lot) → 1-2 lots · ONE entry · NO adds\n"
             "• STOP 2× on EITHER leg → exit BOTH (orders at fill) · never remove\n"
             "• Square off ALL by 15:15 · no re-entry · journal every trade\n"
+            "• Envelope ON as usual: BLUE → sell ATM PE · RED → sell ATM CE\n"
             "• Ladder: -7k = WARN · -10k = EXIT, session over\n"
             "• Tripwires live: ⚔️ ±0.45% = context · 🔴 ±0.8% = trend day"
         )
     else:
         text = (
             f"📋 PLAN · {now:%a %d %b} · Envelope pilot (Mon/Wed/Fri)\n"
-            "• Rotation: Tue = NIFTY strangle · Thu = SENSEX strangle\n"
+            "• Rotation: Tue = NIFTY strangle · Thu = SENSEX strangle "
+            "(envelope stays ON)\n"
             "• BLUE cross → sell ATM PE · RED cross → sell ATM CE (1 lot)\n"
             "• NIFTY + crude @17:00-22:00 · charts checked on NIFTY ONLY\n"
             "• Entry ≤ 2 bars after the alert · ATM = nearest 50-pt strike\n"
