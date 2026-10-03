@@ -14,7 +14,8 @@ import os
 import sys
 from datetime import date, datetime, time
 
-from .config import INTERVAL_MINUTES, Config, ConfigError, strategies_for
+from . import expiry
+from .config import INTERVAL_MINUTES, Config, ConfigError, Watch, strategies_for
 from .control import effective_strategy, process_commands
 from .market_hours import IST, in_session, is_trading_day, now_ist, session_bounds
 from .notify import NotifyError, ping_message, send_telegram
@@ -62,7 +63,8 @@ def build_providers(cfg: Config, watch) -> list[DataProvider]:
 
 
 def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
-                  watch, lookback: int | None = None):
+                  watch, lookback: int | None = None,
+                  min_bars: int | None = None):
     """Try each provider in order for this watch; returns (candles, name).
 
     Session filtering is centralized here (exchange-aware): each provider
@@ -71,9 +73,12 @@ def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
 
     lookback: bar budget (defaults to cfg.lookback_bars; replay passes a big
     number so past dates aren't truncated by the recent-bars tail).
+    min_bars: warm-up floor (defaults to cfg.ema_len + 2). The 09:45 expiry
+    alert only needs the last completed bar, so it passes 1.
     """
     naive_now = now.astimezone(IST).replace(tzinfo=None) if now.tzinfo else now
     budget = lookback or cfg.lookback_bars
+    need = cfg.ema_len + 2 if min_bars is None else min_bars
     errors: list[str] = []
     for provider in providers:
         # yahoo reads the watch's proxy symbol; others read the watch symbol
@@ -84,9 +89,9 @@ def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
             candles = provider.fetch(symbol, cfg.interval, budget)
             candles = filter_session(candles, watch.exchange)
             candles = completed_bars(candles, INTERVAL_MINUTES[cfg.interval], naive_now)
-            if len(candles) < cfg.ema_len + 2:
+            if len(candles) < need:
                 raise ProviderError(
-                    f"only {len(candles)} completed bars (need {cfg.ema_len + 2})")
+                    f"only {len(candles)} completed bars (need {need})")
             if errors:
                 log.warning("using fallback provider %r after: %s",
                             provider.name, "; ".join(errors))
@@ -145,6 +150,21 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
             store.set_control({**store.get_control(), "card_date": today})
         return 0
 
+    # 09:45 expiry-day entry alert (rotation: Tue=NIFTY, Thu=SENSEX): strikes +
+    # indicative premiums + 2x stops + size + 15:15 square-off, once per day.
+    # Entering the block skips this tick's scan (mirrors the plan card); a
+    # failed send leaves the key unset so the next 5-min tick retries until
+    # 10:15. The envelope is paused on these days anyway (see watch loop).
+    instrument = (expiry.EXPIRY_ROTATION.get(now.weekday())
+                  if is_trading_day(now.date(), cfg.holidays) else None)
+    if (not dry_run and instrument
+            and expiry.ALERT_FROM <= now.time() < expiry.ALERT_UNTIL
+            and store.get_control().get("expiry_alert_date") != today):
+        if _expiry_alert(cfg, now, instrument):
+            store.set_control({**store.get_control(),
+                               "expiry_alert_date": today})
+        return 0
+
     for watch in cfg.watches:
         if not dry_run and not in_session(now, cfg.holidays, watch.exchange,
                                           watch.session):
@@ -161,9 +181,19 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         bar_iso = candles.index[-1].isoformat()
         if not dry_run and watch.exchange == "NSE":
             _trend_alerts(cfg, store, candles, now, today)
+        resolved = effective if override else (watch.strategy or effective)
+        # Approved rotation: no envelope entries on strangle days (Tue/Thu).
+        # The watch still runs (tripwires + heartbeat stay live), but
+        # prev_side is dropped below so the side re-baselines silently
+        # instead of alerting a cross the owner must not trade. A manual
+        # /strategy override wins (explicit opt-in beats the rotation).
+        paused = (not dry_run and resolved == "env"
+                  and now.weekday() in expiry.EXPIRY_DAYS)
+        if paused:
+            log.info("envelope paused (%s strangle day) - %s resyncs silently",
+                     now.strftime("%a"), watch.key)
         watch_ok = False
-        strats = strategies_for(effective if override
-                                else (watch.strategy or effective))
+        strats = strategies_for(resolved)
         for index, strat in enumerate(strats):
             # dedicated state key per (watch, strategy) so toggling never mixes
             key = watch.key if strat == "ema20" else f"{watch.key}#{strat}"
@@ -179,7 +209,7 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
                             key, candles.index[-1], stored.last_processed_bar)
                 watch_ok = True
                 continue
-            prev_side = stored.last_side if stored else None
+            prev_side = stored.last_side if (stored and not paused) else None
             try:
                 event, current_side = evaluate(
                     candles,
@@ -205,6 +235,10 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
                 if stored is None:
                     log.info("baseline%s: %s [%s] side=%s (no alert on first run)",
                              " (dry-run, not saved)" if dry_run else "",
+                             key, strat, current_side)
+                elif paused:
+                    log.info("envelope paused - %s [%s] side resynced to %s "
+                             "(pause-day crosses never alert)",
                              key, strat, current_side)
                 else:
                     log.info("no cross - %s [%s] side=%s bar=%s",
@@ -265,12 +299,12 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     return 0
 
 
-_SESSION_BY_WEEKDAY = {                      # pilot: NIFTY every day (nearest
-    0: ("NIFTY", "1 day to Tuesday expiry"),  # expiry = Tuesday)
-    1: ("NIFTY", "EXPIRY DAY"),
-    2: ("NIFTY", "5 days to Tuesday expiry"),
-    3: ("NIFTY", "4 days to Tuesday expiry"),
-    4: ("NIFTY", "3 days to Tuesday expiry"),
+_SESSION_BY_WEEKDAY = {                      # approved rotation (2026-10):
+    0: ("envelope", "NIFTY"),                # Mon/Wed/Fri = envelope pilot,
+    1: ("strangle", "NIFTY"),                # Tue = NIFTY 0DTE strangle,
+    2: ("envelope", "NIFTY"),                # Thu = SENSEX 0DTE strangle
+    3: ("strangle", "SENSEX"),               # (envelope paused Tue/Thu; the
+    4: ("envelope", "NIFTY"),                # 09:45 alert carries the strikes)
 }
 
 
@@ -280,26 +314,80 @@ def _plan_card(cfg: Config, now: datetime) -> bool:
     once-per-day dedupe; failures retry on the next tick at 8:50, 8:55, 9:00, 9:05)."""
     if not (cfg.telegram_token and cfg.telegram_chat_id):
         return False
-    instrument, session = _SESSION_BY_WEEKDAY[now.weekday()]
-    expiry = ("\n• EXPIRY DAY: nearest-expiry ATM = highest gamma — "
-              "same rules, no exceptions"
-              if "EXPIRY" in session else "")
-    text = (f"📋 PLAN · {now:%a %d %b} · {instrument} — {session}\n"
-            "• PILOT: envelope-only · strangles PAUSED · 30 days\n"
+    mode, instrument = _SESSION_BY_WEEKDAY[now.weekday()]
+    if mode == "strangle":
+        spec = expiry.EXPIRY_SPECS[instrument]
+        text = (
+            f"📋 PLAN · {now:%a %d %b} · {instrument} 0DTE STRANGLE day\n"
+            "• Rotation: envelope OFF today (NIFTY + crude) · strangle ON\n"
+            f"• 09:45 alert → SELL 1-strike OTM CE + PE "
+            f"(step {spec['step']} · lot {spec['lot']})\n"
+            "• Size ₹10k ÷ (premium × lot) → 1-2 lots · ONE entry · NO adds\n"
+            "• STOP 2× on EITHER leg → exit BOTH (orders at fill) · never remove\n"
+            "• Square off ALL by 15:15 · no re-entry · journal every trade\n"
+            "• Ladder: -7k = WARN · -10k = EXIT, session over\n"
+            "• Tripwires live: ⚔️ ±0.45% = context · 🔴 ±0.8% = trend day"
+        )
+    else:
+        text = (
+            f"📋 PLAN · {now:%a %d %b} · Envelope pilot (Mon/Wed/Fri)\n"
+            "• Rotation: Tue = NIFTY strangle · Thu = SENSEX strangle\n"
             "• BLUE cross → sell ATM PE · RED cross → sell ATM CE (1 lot)\n"
+            "• NIFTY + crude @17:00-22:00 · charts checked on NIFTY ONLY\n"
             "• Entry ≤ 2 bars after the alert · ATM = nearest 50-pt strike\n"
             "• Exit: REVERSE cross or flat ALL by 15:15, whichever first\n"
             "• Backstop: premium DOUBLES → exit (order at fill)\n"
-            "• Ladder at your terminal: -7k = WARN · -10k = EXIT, session over\n"
             "• Max 2 trades/day · journal every trade · no strangles, no adds\n"
+            "• Ladder: -7k = WARN · -10k = EXIT, session over\n"
             "• Tripwires: ⚔️ ±0.45% = context · 🔴 ±0.8% = trend day"
-            + expiry)
+        )
     try:
         send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
     except NotifyError as exc:
         log.error("plan card failed (%s) - next tick retries", exc)
         return False
-    log.info("plan card sent (%s %s)", now.strftime("%a"), session)
+    log.info("plan card sent (%s %s)", now.strftime("%a"), mode)
+    return True
+
+
+def _expiry_watch(cfg: Config, instrument: str):
+    """Prefer the owner's configured watch (custom SYMBOLS/proxy), else the
+    built-in spec (NIFTY -> NSE:NIFTY1!, SENSEX -> BSE:SENSEX)."""
+    if instrument == "NIFTY":
+        for watch in cfg.watches:
+            if watch.key.upper().startswith("NIFTY"):
+                return watch
+    spec = expiry.EXPIRY_SPECS[instrument]
+    return Watch(key=spec["tv"], label=instrument, exchange=spec["exchange"],
+                 tv_symbol=spec["tv"], yahoo_symbol=spec["yahoo"])
+
+
+def _expiry_alert(cfg: Config, now: datetime, instrument: str) -> bool:
+    """09:45 rotation alert: spot -> 1-strike-OTM legs -> 2x stops -> size.
+    True = sent (the caller records expiry_alert_date for the once-per-day
+    dedupe); False = a later tick inside 09:45-10:15 retries."""
+    if not (cfg.telegram_token and cfg.telegram_chat_id):
+        return False
+    watch = _expiry_watch(cfg, instrument)
+    try:
+        candles, source = fetch_candles(cfg, build_providers(cfg, watch), now,
+                                        watch, lookback=30, min_bars=1)
+    except ProviderError as exc:
+        log.error("expiry alert: no %s spot (%s) - retrying next tick",
+                  instrument, exc)
+        return False
+    spot = float(candles["Close"].iloc[-1])
+    bar_time = candles.index[-1].to_pydatetime()
+    iv, iv_src = expiry.fetch_india_vix()
+    text = expiry.build_alert(instrument, spot, bar_time, now, iv, iv_src,
+                              source)
+    try:
+        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+    except NotifyError as exc:
+        log.error("expiry alert failed (%s) - retrying next tick", exc)
+        return False
+    log.info("expiry entry alert sent (%s, spot %.0f, src=%s)",
+             instrument, spot, source)
     return True
 
 

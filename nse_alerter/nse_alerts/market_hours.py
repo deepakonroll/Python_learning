@@ -13,9 +13,10 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-# exchange -> (open, close, grace_end); both trade Mon-Fri (see is_trading_day)
+# exchange -> (open, close, grace_end); all trade Mon-Fri (see is_trading_day)
 SESSIONS: dict[str, tuple[time, time, time]] = {
     "NSE": (time(9, 15), time(15, 30), time(15, 35)),   # 1st bar 09:15, last 15:25
+    "BSE": (time(9, 15), time(15, 30), time(15, 35)),   # Sensex: same clock as NSE
     "MCX": (time(9, 0), time(23, 30), time(23, 35)),    # energy: 9:00-23:30 IST
 }
 DEFAULT_EXCHANGE = "NSE"
