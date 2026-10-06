@@ -289,8 +289,8 @@ _SESSION_BY_WEEKDAY = {                      # approved rotation (2026-10):
     0: ("envelope", "NIFTY"),                # Mon/Wed/Fri = envelope pilot,
     1: ("strangle", "NIFTY"),                # Tue = NIFTY 0DTE strangle,
     2: ("envelope", "NIFTY"),                # Thu = SENSEX 0DTE strangle
-    3: ("strangle", "SENSEX"),               # (envelope paused Tue/Thu; the
-    4: ("envelope", "NIFTY"),                # 09:45 alert carries the strikes)
+    3: ("strangle", "SENSEX"),               # (envelope runs EVERY day; the
+    4: ("envelope", "NIFTY"),                # 09:45 alert adds the strangle)
 }
 
 
