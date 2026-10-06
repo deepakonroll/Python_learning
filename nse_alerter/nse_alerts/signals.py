@@ -61,6 +61,23 @@ class CrossEvent:
         )
 
 
+def prep_message(symbol: str, direction: str, live: float, level: float,
+                 percent: float, bar_start: datetime, source: str,
+                 current_side: str) -> str:
+    """⚠️ envelope pre-flip heads-up: the FORMING bar is beyond the band, but
+    state does not move - only evaluate() on a completed full-bar break
+    confirms the flip (BLUE/RED as in the confirmed alert)."""
+    color = "BLUE" if direction == "UP" else "RED"
+    op, band = (">", "upper") if direction == "UP" else ("<", "lower")
+    return (
+        f"⚠️ ENV pre-flip · {symbol} live {live:,.2f} {op} {band} {level:,.2f} "
+        f"(±{percent}%)\n"
+        f"{color} flip PENDING · side {current_side} · "
+        f"bar {bar_start:%d %b %H:%M} IST (forming)\n"
+        f"confirms only if the bar CLOSES fully {op} the band · src={source}"
+    )
+
+
 def ema(closes: pd.Series, length: int) -> pd.Series:
     """Exponential moving average (span form - matches TradingView's EMA)."""
     return closes.ewm(span=length, adjust=False).mean()

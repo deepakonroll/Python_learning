@@ -12,18 +12,20 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 from . import expiry
-from .config import INTERVAL_MINUTES, Config, ConfigError, Watch, strategies_for
+from .config import (INTERVAL_MINUTES, TV_SYMBOL_OVERRIDES, Config,
+                     ConfigError, Watch, strategies_for)
 from .control import effective_strategy, process_commands
+from .envelope import envelope_lines, envelope_prep
 from .market_hours import IST, in_session, is_trading_day, now_ist, session_bounds
 from .notify import NotifyError, ping_message, send_telegram
 from .providers.base import DataProvider, ProviderError, completed_bars, filter_session
 from .providers.kite import KiteProvider
 from .providers.tv import TvProvider
 from .providers.yahoo import YahooProvider
-from .signals import STRATEGY_LABELS, SignalError, evaluate
+from .signals import STRATEGY_LABELS, SignalError, evaluate, prep_message
 from .state import StateStore, SymbolState
 
 log = logging.getLogger("nse_alerts")
@@ -48,9 +50,14 @@ def build_providers(cfg: Config, watch) -> list[DataProvider]:
         tv: list[DataProvider] = [TvProvider()]              # type: ignore[list-item]
         yahoo: list[DataProvider] = ([YahooProvider()]       # type: ignore[list-item]
                                      if watch.yahoo_symbol else [])
-        # MCX: anonymous TV access is blocked for MCX, so the free yahoo proxy
-        # leads there; NSE keeps TradingView futures as primary.
-        return yahoo + tv if watch.exchange == "MCX" else tv + yahoo
+        # MCX: anonymous TV access is blocked for MCX symbols, so the free
+        # yahoo proxy leads there - UNLESS the watch has a TV override
+        # (crude -> TVC:UKOIL, real-time): yahoo's BZ=F measured +10 min
+        # stale (2026-10-06), so the fresh TV symbol then leads and yahoo
+        # is only the fallback. NSE keeps TradingView futures as primary.
+        if watch.exchange == "MCX" and watch.key not in TV_SYMBOL_OVERRIDES:
+            return yahoo + tv
+        return tv + yahoo
     if cfg.data_provider == "tv":
         return [TvProvider()]                                # type: ignore[list-item]
     if cfg.data_provider == "yahoo":
@@ -64,7 +71,8 @@ def build_providers(cfg: Config, watch) -> list[DataProvider]:
 
 def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
                   watch, lookback: int | None = None,
-                  min_bars: int | None = None):
+                  min_bars: int | None = None,
+                  include_forming: bool = False):
     """Try each provider in order for this watch; returns (candles, name).
 
     Session filtering is centralized here (exchange-aware): each provider
@@ -82,25 +90,52 @@ def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
     errors: list[str] = []
     for provider in providers:
         # yahoo reads the watch's proxy symbol; others read the watch symbol
-        symbol = watch.yahoo_symbol if provider.name == "yahoo" else watch.tv_symbol
+        # (or its TV override - crude fetches TVC:UKOIL instead of MCX:CRUDEOIL)
+        if provider.name == "yahoo":
+            symbol = watch.yahoo_symbol
+        else:
+            symbol = TV_SYMBOL_OVERRIDES.get(watch.key, watch.tv_symbol)
         if provider.name == "yahoo" and not symbol:
             continue
         try:
             candles = provider.fetch(symbol, cfg.interval, budget)
             candles = filter_session(candles, watch.exchange)
-            candles = completed_bars(candles, INTERVAL_MINUTES[cfg.interval], naive_now)
-            if len(candles) < need:
+            closed = completed_bars(candles, INTERVAL_MINUTES[cfg.interval],
+                                    naive_now)
+            if len(closed) < need:
                 raise ProviderError(
-                    f"only {len(candles)} completed bars (need {need})")
+                    f"only {len(closed)} completed bars (need {need})")
+            if include_forming and len(closed) < len(candles):
+                # Hand the live row back too (never future-started glitch
+                # rows): the caller splits with split_forming() - signals see
+                # completed bars only, the env prep alert watches the forming
+                # one. Validated against `closed` above, so the split can never
+                # starve evaluate() below its warm-up floor.
+                closed = candles[candles.index <= naive_now]
             if errors:
                 log.warning("using fallback provider %r after: %s",
                             provider.name, "; ".join(errors))
-            return candles, provider.name
+            return closed, provider.name
         except ProviderError as exc:
             errors.append(f"{provider.name}: {exc}")
             log.warning("provider %s failed for %s -> %s",
                         provider.name, watch.key, exc)
     raise ProviderError(f"all providers failed for {watch.key}: " + " | ".join(errors))
+
+
+def split_forming(candles, interval_minutes: int, now: datetime):
+    """(completed bars, forming row or None).
+
+    fetch_candles(include_forming=True) hands the live row back too; signal
+    evaluation must see completed bars ONLY (the envelope's full-bar rule),
+    while the prep alert watches the forming one. Mirror of completed_bars().
+    """
+    if candles is None or candles.empty:
+        return candles, None
+    naive = now.astimezone(IST).replace(tzinfo=None) if now.tzinfo else now
+    if candles.index[-1] + timedelta(minutes=interval_minutes) > naive:
+        return candles.iloc[:-1], candles.iloc[[-1]]
+    return candles, None
 
 
 def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
@@ -173,11 +208,16 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
             continue
         try:
             candles, source = fetch_candles(
-                cfg, build_providers(cfg, watch), now, watch)
+                cfg, build_providers(cfg, watch), now, watch,
+                include_forming=True)
         except ProviderError as exc:
             log.error("%s -> skipped this run", exc)
             failed += 1
             continue
+        # signals see completed bars only; the forming row feeds the env prep
+        # heads-up (the full-bar rule must never evaluate a live bar)
+        candles, forming = split_forming(candles,
+                                         INTERVAL_MINUTES[cfg.interval], now)
         bar_iso = candles.index[-1].isoformat()
         if not dry_run and watch.exchange == "NSE":
             _trend_alerts(cfg, store, candles, now, today)
@@ -231,6 +271,11 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
                              key, strat, current_side, bar_iso)
                 if not dry_run:
                     new_day = stored is None or stored.last_seen_date != today
+                    prep_fired = stored.prep_fired if stored else False
+                    if cfg.prep_alerts and strat == "env":
+                        prep_fired = _prep_alert(
+                            cfg, watch.key, candles, forming, current_side,
+                            prep_fired, source)
                     store.put(key, SymbolState(
                         last_side=current_side,
                         last_processed_bar=bar_iso,
@@ -238,6 +283,7 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
                         last_event_bar=stored.last_event_bar if stored else "",
                         history=stored.history if stored else [],
                         last_seen_date=today,
+                        prep_fired=prep_fired,
                     ))
                     if new_day and index == 0:
                         _heartbeat(cfg, current_side, bar_iso, source,
@@ -283,6 +329,44 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         # otherwise every dead-tail tick would spam a note.
         _manual_note(cfg, effective, len(cfg.watches))
     return 0
+
+
+def _prep_alert(cfg: Config, key: str, candles, forming, current_side: str,
+                prep_fired: bool, source: str) -> bool:
+    """⚠️ envelope pre-flip heads-up - one per approach episode.
+
+    evaluate() stays the only path that moves state (a completed full-bar
+    break); this only says the LIVE forming bar would flip if it closed right
+    now, so the band test is seen BEFORE the '+' forms. The episode re-arms
+    when a completed bar closes back inside the band; a failed send keeps the
+    flag down so the next tick retries. Returns the updated prep_fired flag.
+    """
+    _, up_s, lo_s = envelope_lines(candles["Close"], cfg.envelope_len,
+                                   cfg.envelope_percent,
+                                   cfg.envelope_exponential)
+    up, lo = float(up_s.iloc[-1]), float(lo_s.iloc[-1])
+    if up == up and lo == lo and lo <= float(candles["Close"].iloc[-1]) <= up:
+        prep_fired = False              # last completed bar back inside: re-arm
+    if prep_fired or forming is None:
+        return prep_fired               # episode consumed / no live row (yahoo)
+    live = float(forming["Close"].iloc[-1])
+    got = envelope_prep(candles["Close"], live, current_side,
+                        cfg.envelope_len, cfg.envelope_percent,
+                        cfg.envelope_exponential)
+    if got is None or not (cfg.telegram_token and cfg.telegram_chat_id):
+        return prep_fired
+    direction, level = got
+    text = prep_message(key, direction, live, level, cfg.envelope_percent,
+                        forming.index[-1].to_pydatetime(), source,
+                        current_side)
+    try:
+        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+    except NotifyError as exc:
+        log.warning("prep alert failed for %s (%s) - will retry", key, exc)
+        return prep_fired
+    log.info("prep alert sent for %s (%s live %.2f vs band %.2f)", key,
+             direction, live, level)
+    return True
 
 
 _SESSION_BY_WEEKDAY = {                      # approved rotation (2026-10):

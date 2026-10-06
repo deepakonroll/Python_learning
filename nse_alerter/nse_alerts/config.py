@@ -64,6 +64,18 @@ DEFAULT_WATCHES: dict[str, tuple[str, str | None]] = {
     "CRUDEOILM": ("MCX", "BZ=F"),
     "NATURALGAS": ("MCX", "NG=F"),      # Henry Hub
 }
+
+# Watch key -> TradingView symbol, for instruments TV serves under a different
+# name than the broker's. Anonymous TV blocks MCX symbols, but TVC:UKOIL (Brent
+# CFD) streams real-time to anonymous sessions; the yahoo BZ=F futures proxy
+# measured +10 min stale on 2026-10-06 (bar 20:55 shown at 21:09 IST), so
+# crude LEADS with TV and keeps yahoo BZ=F only as the fallback
+# (applied in app.fetch_candles / build_providers, not in parse_watches).
+TV_SYMBOL_OVERRIDES: dict[str, str] = {
+    "MCX:CRUDEOIL": "TVC:UKOIL",
+    "MCX:CRUDEOILM": "TVC:UKOIL",
+}
+
 SYMBOLS_DEFAULT = "NIFTY1!~env,MCX:CRUDEOIL~env@17:00-22:00"  # BOTH on Magic
                                              # Envelope: NIFTY's BLUE/RED
                                              # cross = strangle regime switch;
@@ -175,6 +187,7 @@ class Config:
     state_file: Path
     holidays: frozenset[date]
     log_file: Path | None
+    prep_alerts: bool = True     # envelope pre-flip heads-up (PREP_ALERTS=false)
 
     def active_strategies(self) -> list[str]:
         """Which engines run this pass, primary first (heartbeat uses [0])."""
@@ -289,4 +302,5 @@ def load_config() -> Config:
         state_file=state_file,
         holidays=_parse_holidays(_env("HOLIDAYS")),
         log_file=Path(log_file) if log_file else None,
+        prep_alerts=_env_bool("PREP_ALERTS", True),
     )

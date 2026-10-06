@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from nse_alerts import app
+from nse_alerts.app import build_providers as real_build_providers  # pre-rig ref
 from nse_alerts.providers.base import ProviderError
 from nse_alerts.state import StateStore
 from tests.conftest import MONDAY, SATURDAY, falling, make_candles, make_config, rising
@@ -860,4 +861,132 @@ def test_envelope_alerts_fire_on_strangle_days_too(rig, monkeypatch):
     assert app.run(cfg) == 0
     assert [t for t in envelope_alerts()
             if t.startswith("SELL NIFTY1!")]         # UP -> DOWN fired
+
+
+
+# --- P0 fresh-crude feed + P1 env prep alerts --------------------------------
+
+def test_crude_auto_chain_leads_with_fresh_tv_override(rig):
+    """TVC:UKOIL (real-time) leads for crude; delayed BZ=F is only the
+    fallback; other MCX symbols (NG) keep the old yahoo-first order."""
+    from nse_alerts.config import parse_watches
+
+    cfg, _, _ = rig
+    crude = parse_watches("MCX:CRUDEOIL~env@17:00-22:00")[0]
+    assert [p.name for p in real_build_providers(cfg, crude)] == ["tv", "yahoo"]
+    ng = parse_watches("MCX:NATURALGAS")[0]
+    assert [p.name for p in real_build_providers(cfg, ng)] == ["yahoo", "tv"]
+    assert [p.name for p in real_build_providers(cfg, cfg.watches[0])] \
+        == ["tv", "yahoo"]
+
+    seen: list[str] = []
+
+    class RecorderProvider:
+        name = "tv"
+
+        def fetch(self, symbol, interval, lookback):
+            seen.append(symbol)
+            return make_candles(falling(26))
+
+    candles, src = app.fetch_candles(cfg, [RecorderProvider()], MONDAY, crude,
+                                     min_bars=1)
+    assert seen == ["TVC:UKOIL"]                 # crude fetches the fresh name
+    assert src == "tv" and not candles.empty
+
+
+def _env_cfg(rig):
+    from dataclasses import replace
+
+    cfg, provider, sent = rig
+    return (replace(cfg, strategy="env", envelope_len=5,
+                    envelope_percent=0.3), provider, sent)
+
+
+def _prep_frame(completed_close: float | None = None, live: float = 90.0):
+    """51 completed bars 09:15-13:25 (falling = side DOWN) + a live pierce
+    bar at 13:30 (forming at MONDAY 13:30)."""
+    closes = falling(51)
+    if completed_close is not None:
+        closes[50] = completed_close
+    return make_candles(closes + [live])
+
+
+def test_prep_alert_fires_once_rearms_without_touching_side(rig):
+    cfg, provider, sent = _env_cfg(rig)
+    provider.df = _prep_frame()
+    assert app.run(cfg) == 0
+    texts = [t for _, _, t in sent.messages
+             if not t.startswith(("⚔️", "🔴"))]         # tripwires filtered
+    preps = [t for t in texts if t.startswith("⚠️")]
+    assert len(texts) == 2 and len(preps) == 1          # prep + heartbeat
+    assert "BLUE flip PENDING" in preps[0] and "live 90.00" in preps[0]
+    assert "pre-flip · NIFTY1! live" in preps[0]      # display key, no #env
+    state = StateStore(cfg.state_file).get("NIFTY1!#env")
+    assert state.prep_fired is True
+    assert state.last_side == "DOWN"                # prep NEVER moves state
+    assert state.last_processed_bar == "2026-09-28T13:25:00"  # not the live row
+
+    assert app.run(cfg) == 0                        # same episode: no repeat
+    texts = [t for _, _, t in sent.messages
+             if not t.startswith(("⚔️", "🔴"))]
+    assert len(texts) == 2                          # still just prep + heartbeat
+
+    provider.df = _prep_frame(completed_close=85.75)   # close back inside band
+    assert app.run(cfg) == 0                        # re-arms AND preps again
+    texts = [t for _, _, t in sent.messages
+             if not t.startswith(("⚔️", "🔴"))]
+    preps = [t for t in texts if t.startswith("⚠️")]
+    assert len(preps) == 2                          # one per approach episode
+    assert StateStore(cfg.state_file).get("NIFTY1!#env").prep_fired is True
+
+    before = len(sent.messages)
+    assert app.run(cfg, dry_run=True) == 0          # dry: no sends at all
+    assert len(sent.messages) == before
+
+
+def test_prep_alerts_can_be_disabled(rig):
+    from dataclasses import replace
+
+    cfg, provider, sent = rig
+    cfg = replace(cfg, strategy="env", envelope_len=5, envelope_percent=0.3,
+                  prep_alerts=False)
+    provider.df = _prep_frame()
+    assert app.run(cfg) == 0
+    texts = [t for _, _, t in sent.messages
+             if not t.startswith(("⚔️", "🔴"))]
+    assert len(texts) == 1 and "monitoring live" in texts[0]
+    assert StateStore(cfg.state_file).get("NIFTY1!#env").prep_fired is False
+
+
+def test_prep_send_failure_retries_next_tick(rig, monkeypatch):
+    from nse_alerts.notify import NotifyError
+
+    cfg, provider, sent = _env_cfg(rig)
+    provider.df = _prep_frame()
+    record = sent                                    # the rig's Recorder
+
+    def flaky(token, chat_id, text, **kw):
+        if "pre-flip" in text:
+            raise NotifyError("network blip")
+        record(token, chat_id, text, **kw)
+
+    monkeypatch.setattr(app, "send_telegram", flaky)
+    assert app.run(cfg) == 0                         # advisory failure != 2
+    assert StateStore(cfg.state_file).get("NIFTY1!#env").prep_fired is False
+
+    monkeypatch.setattr(app, "send_telegram", record)
+    assert app.run(cfg) == 0
+    assert any("pre-flip" in t for _, _, t in record.messages)   # retried
+
+
+def test_split_forming_separates_live_row():
+    import pandas as pd
+
+    df = make_candles([100.0] * 52)                  # last row starts 13:30
+    done, forming = app.split_forming(df, 5, MONDAY)
+    assert forming is not None and len(forming) == 1
+    assert forming.index[-1] == pd.Timestamp("2026-09-28 13:30")
+    assert done.index[-1] == pd.Timestamp("2026-09-28 13:25")
+    done2, forming2 = app.split_forming(done, 5, MONDAY)
+    assert forming2 is None and done2 is done
 

@@ -46,3 +46,14 @@ def test_unknown_keys_in_entry_are_tolerated(tmp_path):
     path.write_text(json.dumps({"NIFTY1!": {"last_side": "UP", "future_field": 1}}),
                     encoding="utf-8")
     assert StateStore(path).get("NIFTY1!") is None     # TypeError -> skipped entry
+
+
+def test_prep_fired_defaults_false_and_round_trips(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text('{"NIFTY1!": {"last_side": "UP"}}', encoding="utf-8")
+    state = StateStore(path).get("NIFTY1!")
+    assert state is not None and state.prep_fired is False   # legacy entry
+    state.prep_fired = True
+    StateStore(path).put("NIFTY1!", state)
+    assert StateStore(path).get("NIFTY1!").prep_fired is True
+

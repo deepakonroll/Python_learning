@@ -11,7 +11,7 @@ def _load(monkeypatch, **env):
     monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: None)
     for key in ("STRATEGY", "QQE_RSI_PERIOD", "QQE_SF", "QQE_FACTOR", "SYMBOLS",
                 "ENVELOPE_LEN", "ENVELOPE_PERCENT", "ENVELOPE_EXPONENTIAL",
-                "HOLIDAYS"):
+                "PREP_ALERTS", "HOLIDAYS"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -143,3 +143,15 @@ def test_per_watch_session_window_parsing():
 
     with pytest.raises(ConfigError, match="HH:MM"):
         parse_watches("MCX:CRUDEOIL@5pm-10pm")
+
+
+def test_crude_tv_override_map_and_prep_flag(monkeypatch):
+    from nse_alerts.config import TV_SYMBOL_OVERRIDES
+
+    # P0: crude fetches the real-time TV symbol (applied at fetch time, so
+    # parse_watches keeps tv_symbol clean for every other symbol)
+    assert TV_SYMBOL_OVERRIDES["MCX:CRUDEOIL"] == "TVC:UKOIL"
+    # P1: prep heads-up defaults on; PREP_ALERTS=false switches it off
+    assert _load(monkeypatch).prep_alerts is True
+    assert _load(monkeypatch, PREP_ALERTS="false").prep_alerts is False
+    assert _load(monkeypatch, PREP_ALERTS="true").prep_alerts is True

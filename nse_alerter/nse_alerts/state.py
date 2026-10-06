@@ -22,6 +22,7 @@ class SymbolState:
     updated_at: str = ""
     last_seen_date: str = ""                # YYYY-MM-DD of last live run (heartbeat)
     history: list[dict] = field(default_factory=list)   # rolling tail of events (log)
+    prep_fired: bool = False                # env pre-flip: one heads-up per approach
 
     def record_event(self, side: str, bar_iso: str) -> None:
         self.last_event_side = side

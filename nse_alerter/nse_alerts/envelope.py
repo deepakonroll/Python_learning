@@ -49,3 +49,28 @@ def envelope_side(
     side[low > upper] = 1.0          # comparisons with NaN basis stay False
     side[high < lower] = -1.0        # (mutually exclusive: low <= high)
     return side.ffill()
+
+
+def envelope_prep(
+    closes: pd.Series,
+    live_close: float,
+    side: str,
+    length: int = 20,
+    percent: float = 0.2,
+    exponential: bool = False,
+) -> tuple[str, float] | None:
+    """('UP' | 'DOWN', level) when the LIVE forming bar would flip the side if
+    it closed right now - the heads-up BEFORE the confirmed full-bar break.
+
+    Only a pending FLIP qualifies: a live close beyond the band on the current
+    side is continuation (that flip already happened), so it stays silent.
+    """
+    _basis, upper, lower = envelope_lines(closes, length, percent, exponential)
+    up, lo = float(upper.iloc[-1]), float(lower.iloc[-1])
+    if up != up or lo != lo:               # NaN band (warm-up) - nothing to watch
+        return None
+    if live_close > up and side != "UP":
+        return "UP", up
+    if live_close < lo and side != "DOWN":
+        return "DOWN", lo
+    return None

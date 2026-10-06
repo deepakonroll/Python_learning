@@ -15,7 +15,7 @@ close (see `nse_alerts/expiry.py`).
 | Watch | Exchange | Session (IST, Mon–Fri) | Data source |
 |---|---|---|---|
 | `NIFTY1!` — NIFTY futures | NSE | 09:15–15:35 | TradingView → `^NSEI` yahoo proxy |
-| `MCX:CRUDEOIL` — crude oil futures | MCX | 09:00–23:35, **alerts gated 17:00–22:05** (`@17:00-22:00`) | yahoo `BZ=F` (Brent) — MCX is blocked for anonymous TV |
+| `MCX:CRUDEOIL` — crude oil futures | MCX | 09:00–23:35, **alerts gated 17:00–22:05** (`@17:00-22:00`) | TradingView `TVC:UKOIL` (real-time Brent CFD, anonymous OK) → yahoo `BZ=F` fallback (**+10 min stale**, measured 2026-10-06) — MCX symbols are blocked for anonymous TV |
 | `MCX:NATURALGAS` — natural gas futures | MCX | 09:00–23:35 | yahoo `NG=F` (Henry Hub) — same reason |
 
 QQE is RSI-scale based, so Brent/Henry-Hub proxies track MCX closely even
@@ -26,7 +26,7 @@ though prices differ (USD vs INR). Exact MCX contracts come later via Kite (§6)
 | Value | Rule |
 |---|---|
 | **`qqe`** *(default)* | Ported **"QQE signals"** Pine script (colinmck): Wilders-RSI → smoothed ATR-of-RSI bands; alert when the trailing line flips across RSIndex → `BUY` (Long) / `SELL` (Short). Smoother, fewer whipsaws (~5 flips/day on recent NIFTY data vs EMA20's ~11). |
-| `env` | **Magic Envelope** port: SMA20 ± `ENVELOPE_PERCENT` band (0.2%); a *full bar* beyond the band flips the side (carry-forward). Backtest on a month of 5m bars: **crude 5.3 flips/day (3–7, no dead days)**, NIFTY 0.5/day — tune per symbol. Attach per-watch with `SYMBOLS … ~env` or run globally via `/strategy env`. |
+| `env` | **Magic Envelope** port: SMA20 ± `ENVELOPE_PERCENT` band (0.2%); a *full bar* beyond the band flips the side (carry-forward). Backtest on a month of 5m bars: **crude 5.3 flips/day (3–7, no dead days)**, NIFTY 0.5/day — tune per symbol. Attach per-watch with `SYMBOLS … ~env` or run globally via `/strategy env`. **Prep heads-up**: while an env watch is live, the *forming* bar beyond the band sends a one-off `⚠️ ENV pre-flip · … flip PENDING` within one cron tick — state never moves on prep, and a completed bar closing back inside the band re-arms the episode (`PREP_ALERTS=false` opts out). |
 | `ema20` | The original rule: 5m close flips below→above EMA20 → `BUY`, above→below → `SELL`. |
 | `both` | Both engines run side by side with **independent dedupe state** (`NIFTY1!` and `NIFTY1!#qqe`), one daily heartbeat. |
 
@@ -206,8 +206,8 @@ Remove: `Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$fa
 
 | Provider | What it gives | When used |
 |---|---|---|
-| **tv** (default for NSE) | `NSE:NIFTY1!` — actual **NIFTY futures**, continuous front-month (auto-rolls at expiry), real-time for retail users | first choice in `DATA_PROVIDER=auto` for NSE watches |
-| **yahoo** (fallback for NSE, **primary for MCX**) | `^NSEI` spot proxy for NIFTY; `BZ=F` Brent + `NG=F` Henry Hub for crude/natgas | TradingView's unofficial API **rejects MCX for anonymous sessions** (verified), so MCX watches go yahoo-first. Alerts show `src=yahoo` |
+| **tv** (default for NSE + crude) | `NSE:NIFTY1!` — actual **NIFTY futures**, continuous front-month (auto-rolls at expiry), real-time for retail users; `TVC:UKOIL` Brent CFD for crude | first choice in `DATA_PROVIDER=auto` for NSE watches **and** for crude (built-in TV override) |
+| **yahoo** (fallback for NSE & crude; **primary for other MCX**) | `^NSEI` spot proxy for NIFTY; `BZ=F` Brent + `NG=F` Henry Hub for crude/natgas | TradingView's unofficial API **rejects MCX symbols for anonymous sessions** (verified), so plain MCX watches go yahoo-first — but crude has a TV override (`TVC:UKOIL`, real-time) because `BZ=F` measured **+10 min stale** (2026-10-06: bar 20:55 at 21:09), making TV the lead and BZ=F the fallback. Alerts show `src=` of whichever fired |
 | **kite** (later) | your Zerodha account's real front-month futures — **exact MCX INR contracts too** | only if you set `DATA_PROVIDER=kite` + credentials |
 
 ## 6. Enabling Zerodha Kite later
