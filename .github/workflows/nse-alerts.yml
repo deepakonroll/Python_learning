@@ -10,7 +10,7 @@ on:
     - cron: '30,35,40,45,50,55 3 * * 1-5'   # 09:00-09:25 IST (MCX open)
     - cron: '*/5 4-17 * * 1-5'              # 09:30-23:25 IST (NSE + MCX)
     - cron: '0,5 18 * * 1-5'                # 23:30-23:35 IST (MCX close grace)
-    - cron: '45,50,55 3 * * 1-5'            # 08:45-08:55 IST plan card (backup)
+    - cron: '15,20,25 3 * * 1-5'            # 08:45-08:55 IST plan card (backup)
   workflow_dispatch:            # manual "Run workflow" button for testing
 
 permissions:
