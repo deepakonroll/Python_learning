@@ -47,17 +47,7 @@ def configure_logging(verbose: bool = False, log_file=None) -> None:
 def build_providers(cfg: Config, watch) -> list[DataProvider]:
     """Ordered fallback chain per watch. auto = TradingView -> yahoo proxy."""
     if cfg.data_provider == "auto":
-        tv: list[DataProvider] = [TvProvider()]              # type: ignore[list-item]
-        yahoo: list[DataProvider] = ([YahooProvider()]       # type: ignore[list-item]
-                                     if watch.yahoo_symbol else [])
-        # MCX: anonymous TV access is blocked for MCX symbols, so the free
-        # yahoo proxy leads there - UNLESS the watch has a TV override
-        # (crude -> TVC:UKOIL, real-time): yahoo's BZ=F measured +10 min
-        # stale (2026-10-06), so the fresh TV symbol then leads and yahoo
-        # is only the fallback. NSE keeps TradingView futures as primary.
-        if watch.exchange == "MCX" and watch.key not in TV_SYMBOL_OVERRIDES:
-            return yahoo + tv
-        return tv + yahoo
+        return _free_chain(watch)
     if cfg.data_provider == "tv":
         return [TvProvider()]                                # type: ignore[list-item]
     if cfg.data_provider == "yahoo":
@@ -65,8 +55,30 @@ def build_providers(cfg: Config, watch) -> list[DataProvider]:
             raise ConfigError(f"no yahoo proxy configured for {watch.key}")
         return [YahooProvider()]                             # type: ignore[list-item]
     if cfg.data_provider == "kite":
-        return [KiteProvider(cfg.kite_api_key, cfg.kite_access_token)]
+        # Kite leads so alerts read the exact front-month contracts, but the
+        # free chain STAYS behind it: the access token dies every trading day,
+        # and a stale one must degrade to TV/yahoo - never darken the alerts.
+        if not (cfg.kite_api_key and cfg.kite_access_token):
+            log.warning("DATA_PROVIDER=kite but KITE_API_KEY/KITE_ACCESS_TOKEN "
+                        "not set - kite fetches will fail and fall back")
+        return [KiteProvider(cfg.kite_api_key, cfg.kite_access_token),  # type: ignore[list-item]
+                *_free_chain(watch)]
     raise ConfigError(f"unknown DATA_PROVIDER {cfg.data_provider!r}")
+
+
+def _free_chain(watch) -> list[DataProvider]:
+    """TradingView futures -> yahoo spot proxy, ordered per watch (auto)."""
+    tv: list[DataProvider] = [TvProvider()]              # type: ignore[list-item]
+    yahoo: list[DataProvider] = ([YahooProvider()]       # type: ignore[list-item]
+                                 if watch.yahoo_symbol else [])
+    # MCX: anonymous TV access is blocked for MCX symbols, so the free
+    # yahoo proxy leads there - UNLESS the watch has a TV override
+    # (crude -> TVC:UKOIL, real-time): yahoo's BZ=F measured +10 min
+    # stale (2026-10-06), so the fresh TV symbol then leads and yahoo
+    # is only the fallback. NSE keeps TradingView futures as primary.
+    if watch.exchange == "MCX" and watch.key not in TV_SYMBOL_OVERRIDES:
+        return yahoo + tv
+    return tv + yahoo
 
 
 def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
@@ -89,10 +101,14 @@ def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
     need = cfg.ema_len + 2 if min_bars is None else min_bars
     errors: list[str] = []
     for provider in providers:
-        # yahoo reads the watch's proxy symbol; others read the watch symbol
-        # (or its TV override - crude fetches TVC:UKOIL instead of MCX:CRUDEOIL)
+        # yahoo reads the watch's proxy symbol, kite reads the raw watch
+        # symbol (its own front-month picker maps MCX:CRUDEOIL to the real
+        # INR contract; the TV override is TV-only), tv reads the watch
+        # symbol or its override (crude fetches TVC:UKOIL, real-time)
         if provider.name == "yahoo":
             symbol = watch.yahoo_symbol
+        elif provider.name == "kite":
+            symbol = watch.tv_symbol
         else:
             symbol = TV_SYMBOL_OVERRIDES.get(watch.key, watch.tv_symbol)
         if provider.name == "yahoo" and not symbol:

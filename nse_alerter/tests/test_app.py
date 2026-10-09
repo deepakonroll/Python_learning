@@ -879,6 +879,56 @@ def test_crude_auto_chain_leads_with_fresh_tv_override(rig):
     assert [p.name for p in real_build_providers(cfg, cfg.watches[0])] \
         == ["tv", "yahoo"]
 
+
+def test_kite_provider_leads_with_free_chain_behind(rig):
+    """DATA_PROVIDER=kite: paid feed first, free TV/yahoo chain still behind
+    it - a stale daily token degrades, it never darkens the alerts."""
+    from dataclasses import replace
+
+    from nse_alerts.config import parse_watches
+
+    cfg, _, _ = rig
+    cfg = replace(cfg, data_provider="kite",
+                  kite_api_key="key", kite_access_token="tok")
+    crude = parse_watches("MCX:CRUDEOIL~env@17:00-22:00")[0]
+    ng = parse_watches("MCX:NATURALGAS")[0]
+    assert [p.name for p in real_build_providers(cfg, cfg.watches[0])] \
+        == ["kite", "tv", "yahoo"]
+    assert [p.name for p in real_build_providers(cfg, crude)] \
+        == ["kite", "tv", "yahoo"]
+    assert [p.name for p in real_build_providers(cfg, ng)] \
+        == ["kite", "yahoo", "tv"]
+
+
+def test_stale_kite_token_falls_back_to_free_provider(rig):
+    """A dead kite (expired token, credits gone...) must keep alerts alive on
+    the next provider; kite reads the RAW watch symbol - the TV override
+    (TVC:UKOIL) is TV-only."""
+    from nse_alerts.config import parse_watches
+
+    cfg, _, _ = rig
+    crude = parse_watches("MCX:CRUDEOIL~env@17:00-22:00")[0]
+    seen: list[str] = []
+
+    class DeadKite:
+        name = "kite"
+
+        def fetch(self, symbol, interval, lookback):
+            seen.append(symbol)
+            raise ProviderError("Token is invalid or has expired")
+
+    class Recorder:
+        name = "tv"
+
+        def fetch(self, symbol, interval, lookback):
+            seen.append(symbol)
+            return make_candles(falling(26))
+
+    candles, src = app.fetch_candles(cfg, [DeadKite(), Recorder()], MONDAY,
+                                     crude, min_bars=1)
+    assert seen == ["MCX:CRUDEOIL", "TVC:UKOIL"]    # kite raw, tv override
+    assert src == "tv" and not candles.empty
+
     seen: list[str] = []
 
     class RecorderProvider:

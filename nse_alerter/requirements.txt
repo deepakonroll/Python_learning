@@ -10,9 +10,9 @@ yfinance>=0.2.65          # NSE spot proxy fallback
 tvdatafeed-enhanced>=2.2  # TradingView NIFTY futures candles (unofficial)
 websocket-client>=1.9     # undeclared-but-required dep of tvdatafeed-enhanced
 
-# Zerodha Kite (provider is built but disabled until you enable it - see README)
+# Zerodha Kite (leads every chain when DATA_PROVIDER=kite - see README §6)
 kiteconnect>=5.0
-pyotp>=2.9                # TOTP auto-login for the daily access token (later)
+pyotp>=2.9                # TOTP for kite_login.py --auto headless login
 
 # Development
 pytest>=8.0

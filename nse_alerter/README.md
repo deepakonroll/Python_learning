@@ -208,32 +208,59 @@ Remove: `Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$fa
 |---|---|---|
 | **tv** (default for NSE + crude) | `NSE:NIFTY1!` — actual **NIFTY futures**, continuous front-month (auto-rolls at expiry), real-time for retail users; `TVC:UKOIL` Brent CFD for crude | first choice in `DATA_PROVIDER=auto` for NSE watches **and** for crude (built-in TV override) |
 | **yahoo** (fallback for NSE & crude; **primary for other MCX**) | `^NSEI` spot proxy for NIFTY; `BZ=F` Brent + `NG=F` Henry Hub for crude/natgas | TradingView's unofficial API **rejects MCX symbols for anonymous sessions** (verified), so plain MCX watches go yahoo-first — but crude has a TV override (`TVC:UKOIL`, real-time) because `BZ=F` measured **+10 min stale** (2026-10-06: bar 20:55 at 21:09), making TV the lead and BZ=F the fallback. Alerts show `src=` of whichever fired |
-| **kite** (later) | your Zerodha account's real front-month futures — **exact MCX INR contracts too** | only if you set `DATA_PROVIDER=kite` + credentials |
+| **kite** (opt-in paid) | your Zerodha account's real front-month futures — **exact MCX INR contracts too** (instrument master cached 6 h; a `-FUT` filter picks the NIFTY/crude/SENSEX front month automatically) | leads every chain when you set `DATA_PROVIDER=kite` + credentials; the free chain stays behind it, so a stale daily token just falls back |
 
-## 6. Enabling Zerodha Kite later
+## 6. Zerodha Kite (paid feed — leads the chain, with free-feed insurance)
 
-The provider is **built and tested but disabled** — the free Kite "Personal"
-plan has **no market data**; you need the paid Kite Connect plan for
-historical/live candles. When ready:
+You're on the **paid Kite Connect plan** (₹500 / 30 days) with an app at
+`developers.kite.trade` → *My Apps* (`redirect_url = http://localhost:3000`).
 
-1. Confirm your plan at `developers.kite.trade` → *My Apps* (paid = data APIs work).
-2. Put in `.env`:
+1. Put in `.env` (both from the *My Apps* page — `api_secret` is shown once at
+   app creation):
    ```ini
    DATA_PROVIDER=kite
    KITE_API_KEY=your_api_key
-   KITE_ACCESS_TOKEN=...        # expires EVERY trading day
+   KITE_API_SECRET=your_api_secret
    ```
-3. Daily token: Kite's `access_token` dies each night. Two options:
-   - **Manual (simple):** every morning run Kite's login flow in a browser
-     (or a 5-line script with `kiteconnect`) and paste the token into `.env`.
-   - **Automated:** a `kite_login.py` using `pyotp` (already in requirements)
-     + your Kite user id/password/TOTP secret — wire it as an 08:55 Task
-     Scheduler job. *(Build this when you actually enable Kite.)*
-4. The provider auto-selects the **front-month NIFTY future** from the
-   instruments file, so expiry rolls need no maintenance.
+2. **Daily token** (`access_token` dies every trading day, ~6 AM IST):
+   ```powershell
+   python kite_login.py      # opens the Kite login in your browser; do the
+                             # TOTP yourself; the localhost:3000 redirect is
+                             # caught and KITE_ACCESS_TOKEN is saved into .env
+   ```
+   Variants: `python kite_login.py --url "<redirect url from the address bar>"`
+   (paste instead of letting the script listen), or `--auto` for fully headless
+   login driven by `KITE_USER_ID` / `KITE_PASSWORD` / `KITE_TOTP_SECRET`
+   (base32 from your authenticator app; an *unofficial* form flow — if
+   Zerodha changes the form it fails loudly and browser mode still works).
+   Schedule it at 08:55 each trading morning:
+   ```powershell
+   $action = New-ScheduledTaskAction -Execute "python" -Argument "kite_login.py --auto" `
+       -WorkingDirectory "d:\Cursor\python_for_java_devs\nse_alerter"
+   Register-ScheduledTask -TaskName "Kite-Daily-Login" -Action $action `
+       -Trigger (New-ScheduledTaskTrigger -Daily -At 08:55) -Force
+   ```
+3. What kite gives the bot: the **real front-month futures** for every watch —
+   NIFTY on NFO, crude on MCX (the exact INR contract, no proxy delay),
+   SENSEX on BFO — picked automatically from the instrument master
+   (`https://api.kite.trade/instruments`, downloaded once per **6-hour cache
+   window**, never per fetch), so expiry rolls need zero maintenance. History
+   depth beats the free feeds (months of 5-minute candles vs TradingView's
+   ~6k-row cap ≈ 3 weeks and yahoo's 60 days), at the same one historical
+   call per watch per cron tick.
 
-Note: keep `DATA_PROVIDER=auto` if you want TradingView-first with yahoo fallback;
-`kite` is *explicit only* (no silent fallback to free feeds).
+**Insurance (why you can leave it on):** `DATA_PROVIDER=kite` puts kite
+*first* but keeps the free TradingView/yahoo chain behind it — if the token
+is stale (forgot the morning login, long weekend, credits exhausted), every
+fetch logs `provider kite failed … -> using fallback provider` and the alerts
+keep flying on the free feeds. Nothing goes dark.
+
+**Credit caveat:** the plan's "500 credits" metering isn't documented
+precisely (check *My Apps* for your balance), and the bot spends ~1 historical
+call per watch per 5-minute tick while kite leads (≈500 calls/day for the
+default NIFTY + crude list). If the balance drains faster than the ₹500/30-day
+plan renews, drop back to `DATA_PROVIDER=auto` — the bot never depends on
+kite succeeding.
 
 ## 7. Cloud deployment (GitHub Actions) — runs while your PC is OFF
 
