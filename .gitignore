@@ -30,3 +30,5 @@ charts/
 .env
 state.json
 *.log
+# research-tool OHLC cache (vix_strangle_sweep)
+nse_alerter/tools/_data/
