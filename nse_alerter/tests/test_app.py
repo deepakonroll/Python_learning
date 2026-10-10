@@ -641,7 +641,7 @@ def test_plan_card_once_per_day_and_no_manual_note(rig, monkeypatch):
     assert texts[0].startswith("📋 PLAN") and "NIFTY" in texts[0]
     assert "premium DOUBLES" in texts[0] and "15:15" in texts[0]
     assert "1 lot" in texts[0] and "BLUE cross" in texts[0]
-    assert "Envelope pilot" in texts[0] and "NIFTY ONLY" in texts[0]
+    assert "Envelope ON daily" in texts[0] and "NIFTY ONLY" in texts[0]
     assert "-10k = EXIT" in texts[0]
 
     assert app.run(cfg) == 0                         # next tick, same day
@@ -657,8 +657,9 @@ def test_plan_card_once_per_day_and_no_manual_note(rig, monkeypatch):
 
 
 def test_plan_card_weekday_rotation_and_expiry_line(rig, monkeypatch):
-    """v4 rotation cards: Tue = NIFTY strangle, Wed = envelope pilot,
-    Thu = SENSEX strangle - each with its own discipline rules."""
+    """v5 rotation cards: every weekday leads with its strangle plan - Tue
+    NIFTY 0-DTE, Wed SENSEX 1.9-sess, Thu SENSEX NO ENTRY, Fri NIFTY
+    2.9-sess - all carrying the shared 20-lot + envelope-pilot rules."""
     from datetime import datetime
 
     from nse_alerts import control
@@ -671,23 +672,32 @@ def test_plan_card_weekday_rotation_and_expiry_line(rig, monkeypatch):
                         lambda: datetime(2026, 9, 29, 8, 50, tzinfo=IST))  # Tue
     assert app.run(cfg) == 0
     text = sent.messages[-1][2]
-    assert "NIFTY 0DTE STRANGLE" in text
+    assert "NIFTY 0-DTE STRANGLE" in text
     assert "09:45 alert" in text and "2×" in text and "15:15" in text
-    assert "Envelope ON" in text                     # envelope runs Tue/Thu too
+    assert "credit ≥ ₹18" in text and "stop −1.0C" in text   # 0-DTE rule line
+    assert "Envelope ON daily" in text               # envelope runs every day
 
     monkeypatch.setattr(app, "now_ist",
                         lambda: datetime(2026, 9, 30, 8, 50, tzinfo=IST))  # Wed
     assert app.run(cfg) == 0
     text = sent.messages[-1][2]
-    assert "Envelope pilot" in text and "Tue = NIFTY strangle" in text
-    assert "STRANGLE day" not in text                # pilot day, not strangle
+    assert "SENSEX intraday STRANGLE" in text
+    assert "step 100" in text and "lot 20" in text   # Sensex grid + size rule
+    assert "1.9 sess to Thu" in text and "floor ₹40" in text
 
     monkeypatch.setattr(app, "now_ist",
                         lambda: datetime(2026, 10, 1, 8, 50, tzinfo=IST))  # Thu
     assert app.run(cfg) == 0
     text = sent.messages[-1][2]
-    assert "SENSEX 0DTE STRANGLE" in text
-    assert "step 100" in text and "lot 20" in text   # Sensex grid + size rule
+    assert "SENSEX STRANGLE · NO ENTRY" in text
+    assert "step 100" in text and "measured E<0" in text
+
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 10, 2, 8, 50, tzinfo=IST))  # Fri
+    assert app.run(cfg) == 0
+    text = sent.messages[-1][2]
+    assert "NIFTY intraday STRANGLE" in text
+    assert "2.9 sess to Tue" in text and "floor ₹18" in text
 
 
 def test_trend_tripwires_zone_then_trend_fire_once(monkeypatch, tmp_path):
@@ -755,7 +765,8 @@ def test_expiry_entry_alert_tuesday_0945_fires_once(rig, monkeypatch):
     assert len(alerts) == 1
     text = alerts[0]
     assert "NIFTY 0DTE strangle" in text
-    assert "SELL 22,500 CE" in text and "SELL 22,400 PE" in text  # spot -> ATM 22,450
+    assert "SELL 22,650 CE" in text and "SELL 22,250 PE" in text  # closer 0.95%
+    assert "20 lots (1,300 qty)" in text
     assert "2×" in text and "15:15" in text and "EITHER leg" in text
     assert "ONE entry" in text and "NO adds" in text
     ctrl = StateStore(cfg.state_file).get_control()
@@ -798,7 +809,7 @@ def test_expiry_entry_alert_retries_after_provider_failure(rig, monkeypatch):
 
 
 def test_expiry_entry_alert_thursday_uses_sensex_grid(rig, monkeypatch):
-    """Thu 09:45 -> SENSEX alert on the 100-pt strike grid (step/lot 100/20)."""
+    """Thu 09:45 -> SENSEX NO-ENTRY alert (0-DTE E<0) on the 100-pt grid."""
     from datetime import datetime
 
     from nse_alerts import control, expiry
@@ -817,13 +828,55 @@ def test_expiry_entry_alert_thursday_uses_sensex_grid(rig, monkeypatch):
     assert len(alerts) == 1
     text = alerts[0]
     assert "SENSEX 0DTE strangle" in text
-    assert "SELL 72,000 CE" in text and "SELL 71,800 PE" in text  # ATM 71,900
+    assert "NO ENTRY" in text                          # Thu 0-DTE = E<0, measured
+    assert "72,600 CE" in text and "71,200 PE" in text  # 0.95% on step 100
     assert "15:15" in text
 
 
+def test_expiry_entry_alert_fires_friday_monday_wednesday(rig, monkeypatch):
+    """2026-10-09 rotation: the entry alert fires EVERY weekday - Fri 2.9-sess
+    NIFTY, Mon 1.9-sess NIFTY, Wed 1.9-sess SENSEX - closer rule each time."""
+    from datetime import datetime
+
+    from nse_alerts import control, expiry
+    from nse_alerts.market_hours import IST
+
+    cfg, provider, sent = rig
+    monkeypatch.setattr(control, "fetch_updates", lambda token: [])
+    monkeypatch.setattr(expiry, "fetch_india_vix",
+                        lambda *a, **k: (0.14, "test"))
+
+    # Friday: NIFTY, 2.9 sessions to Tuesday expiry
+    provider.df = make_candles([22445.0] * 12, start="2026-10-09 09:15")
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 10, 9, 9, 45, tzinfo=IST))
+    assert app.run(cfg) == 0
+    alerts = [t for _, _, t in sent.messages if t.startswith("🎯")]
+    assert len(alerts) == 1
+    assert "NIFTY strangle · exp Tue" in alerts[0]
+    assert "2.9 sess" in alerts[0] and "rule CLOSER 0.95%" in alerts[0]
+
+    # Monday re-arms the key: same instrument, 1.9 sessions
+    provider.df = make_candles([22445.0] * 12, start="2026-10-12 09:15")
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 10, 12, 9, 45, tzinfo=IST))
+    assert app.run(cfg) == 0
+    alerts = [t for _, _, t in sent.messages if t.startswith("🎯")]
+    assert len(alerts) == 2 and "1.9 sess" in alerts[-1]
+
+    # Wednesday: SENSEX takes over (rotated instrument + Thursday expiry tag)
+    provider.df = make_candles([71905.0] * 12, start="2026-10-14 09:15")
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 10, 14, 9, 45, tzinfo=IST))
+    assert app.run(cfg) == 0
+    alerts = [t for _, _, t in sent.messages if t.startswith("🎯")]
+    assert len(alerts) == 3
+    assert "SENSEX strangle · exp Thu" in alerts[-1]
+
+
 def test_envelope_alerts_fire_on_strangle_days_too(rig, monkeypatch):
-    """No pause: Tue/Thu ADD the 09:45 strangle alert but the envelope keeps
-    evaluating and alerting every day of the rotation."""
+    """No pause: entry days ADD the 09:45 strangle alert but the envelope
+    keeps evaluating and alerting every day of the rotation."""
     from dataclasses import replace
     from datetime import datetime
 

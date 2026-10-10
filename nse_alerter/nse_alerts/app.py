@@ -201,11 +201,11 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
             store.set_control({**store.get_control(), "card_date": today})
         return 0
 
-    # 09:45 expiry-day entry alert (rotation: Tue=NIFTY, Thu=SENSEX): strikes +
-    # indicative premiums + 2x stops + size + 15:15 square-off, once per day.
-    # Entering the block skips this tick's scan (mirrors the plan card); a
-    # failed send leaves the key unset so the next 5-min tick retries until
-    # 10:15. The envelope itself runs every day - this only ADDS the strangle.
+    # 09:45 entry alert, every trading day (ENTRY_SESSIONS: NIFTY Mon/Tue/Fri,
+    # SENSEX Wed/Thu): strike_rule() decision + premiums + 2x leg stops +
+    # portfolio stop/target + 15:15 square-off, once per day. Entering the
+    # block consumes this tick (mirrors the plan card); a failed send leaves
+    # the key unset so the next 5-min tick retries until 10:15.
     instrument = (expiry.EXPIRY_ROTATION.get(now.weekday())
                   if is_trading_day(now.date(), cfg.holidays) else None)
     if (not dry_run and instrument
@@ -385,55 +385,57 @@ def _prep_alert(cfg: Config, key: str, candles, forming, current_side: str,
     return True
 
 
-_SESSION_BY_WEEKDAY = {                      # approved rotation (2026-10):
-    0: ("envelope", "NIFTY"),                # Mon/Wed/Fri = envelope pilot,
-    1: ("strangle", "NIFTY"),                # Tue = NIFTY 0DTE strangle,
-    2: ("envelope", "NIFTY"),                # Thu = SENSEX 0DTE strangle
-    3: ("strangle", "SENSEX"),               # (envelope runs EVERY day; the
-    4: ("envelope", "NIFTY"),                # 09:45 alert adds the strangle)
+# static 09:45 rule line per weekday (VIX-ladder sweep, 2026-10-09): every
+# weekday is an entry day under expiry.EXPIRY_ROTATION.
+_ENTRY_LINE = {
+    0: "• 09:45 · NIFTY closer 0.95% (1.9 sess to Tue) · floor ₹18 · stop −0.5C",
+    1: "• 09:45 · NIFTY 0DTE · enter only if credit ≥ ₹18 · stop −1.0C · else SKIP",
+    2: "• 09:45 · SENSEX closer 0.95% (1.9 sess to Thu) · floor ₹40 · stop −0.5C",
+    3: "• 09:45 · SENSEX 0DTE · NO ENTRY (measured E<0) · envelope only",
+    4: "• 09:45 · NIFTY closer 0.95% (2.9 sess to Tue) · floor ₹18 · stop −0.5C",
 }
 
 
 def _plan_card(cfg: Config, now: datetime) -> bool:
-    """08:45 discipline card - static rules, no market data, so a flaky feed
-    can never eat it. True = sent (the caller records card_date for the
-    once-per-day dedupe; failures retry on the next tick at 8:50, 8:55, 9:00, 9:05)."""
+    """08:45 discipline card (v5) - static rules, no market data, so a flaky
+    feed can never eat it. Every weekday leads with the day's strangle plan
+    (Thu = NO ENTRY reminder); the envelope-pilot rules ride along because the
+    envelope runs daily. True = sent (the caller records card_date for the
+    once-per-day dedupe; failures retry on the next tick at 8:50, 8:55, 9:00,
+    9:05)."""
     if not (cfg.telegram_token and cfg.telegram_chat_id):
         return False
-    mode, instrument = _SESSION_BY_WEEKDAY[now.weekday()]
-    if mode == "strangle":
-        spec = expiry.EXPIRY_SPECS[instrument]
-        text = (
-            f"📋 PLAN · {now:%a %d %b} · {instrument} 0DTE STRANGLE day\n"
-            f"• 09:45 alert → SELL 1-strike OTM CE + PE "
-            f"(step {spec['step']} · lot {spec['lot']})\n"
-            "• Size ₹10k ÷ (premium × lot) → 1-2 lots · ONE entry · NO adds\n"
-            "• STOP 2× on EITHER leg → exit BOTH (orders at fill) · never remove\n"
-            "• Square off ALL by 15:15 · no re-entry · journal every trade\n"
-            "• Envelope ON as usual: BLUE → sell ATM PE · RED → sell ATM CE\n"
-            "• Ladder: -7k = WARN · -10k = EXIT, session over\n"
-            "• Tripwires live: ⚔️ ±0.45% = context · 🔴 ±0.8% = trend day"
-        )
-    else:
-        text = (
-            f"📋 PLAN · {now:%a %d %b} · Envelope pilot (Mon/Wed/Fri)\n"
-            "• Rotation: Tue = NIFTY strangle · Thu = SENSEX strangle "
-            "(envelope stays ON)\n"
-            "• BLUE cross → sell ATM PE · RED cross → sell ATM CE (1 lot)\n"
-            "• NIFTY + crude @17:00-22:00 · charts checked on NIFTY ONLY\n"
-            "• Entry ≤ 2 bars after the alert · ATM = nearest 50-pt strike\n"
-            "• Exit: REVERSE cross or flat ALL by 15:15, whichever first\n"
-            "• Backstop: premium DOUBLES → exit (order at fill)\n"
-            "• Max 2 trades/day · journal every trade · no strangles, no adds\n"
-            "• Ladder: -7k = WARN · -10k = EXIT, session over\n"
-            "• Tripwires: ⚔️ ±0.45% = context · 🔴 ±0.8% = trend day"
-        )
+    wd = now.weekday()
+    instrument = expiry.EXPIRY_ROTATION[wd]
+    spec = expiry.EXPIRY_SPECS[instrument]
+    title = ("NIFTY 0-DTE STRANGLE" if wd == 1
+             else "SENSEX STRANGLE · NO ENTRY" if wd == 3
+             else f"{instrument} intraday STRANGLE")
+    text = (
+        f"📋 PLAN · {now:%a %d %b} · {title}\n"
+        f"• 09:45 alert → rule CLOSER 0.95% CE + PE "
+        f"(step {spec['step']} · lot {spec['lot']})\n"
+        + _ENTRY_LINE[wd] + "\n"
+        "• Size 20 lots fixed (1,300 NIFTY / 400 SENSEX qty) · ONE entry · NO adds\n"
+        "• STOP 2× on EITHER leg → exit BOTH (orders at fill) · never remove\n"
+        "• Portfolio: stop −0.5C (−1.0C on NIFTY 0-DTE) · target = 15:15 decay\n"
+        "• Square off ALL by 15:15 · no re-entry · journal every trade\n"
+        "• Envelope ON daily (pilot): BLUE cross → sell ATM PE · "
+        "RED cross → sell ATM CE (1 lot)\n"
+        "• Entry ≤ 2 bars after the alert · ATM = nearest 50-pt strike\n"
+        "• Exit: REVERSE cross or flat ALL by 15:15 · backstop: premium "
+        "DOUBLES → exit (order at fill)\n"
+        "• Max 2 envelope trades/day · NIFTY + crude @17:00-22:00 · "
+        "charts on NIFTY ONLY\n"
+        "• Ladder: -7k = WARN · -10k = EXIT, session over\n"
+        "• Tripwires live: ⚔️ ±0.45% = context · 🔴 ±0.8% = trend day"
+    )
     try:
         send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
     except NotifyError as exc:
         log.error("plan card failed (%s) - next tick retries", exc)
         return False
-    log.info("plan card sent (%s %s)", now.strftime("%a"), mode)
+    log.info("plan card sent (%s %s)", now.strftime("%a"), instrument)
     return True
 
 
@@ -450,7 +452,7 @@ def _expiry_watch(cfg: Config, instrument: str):
 
 
 def _expiry_alert(cfg: Config, now: datetime, instrument: str) -> bool:
-    """09:45 rotation alert: spot -> 1-strike-OTM legs -> 2x stops -> size.
+    """09:45 entry alert: spot -> strike_rule() -> premiums -> stops/size.
     True = sent (the caller records expiry_alert_date for the once-per-day
     dedupe); False = a later tick inside 09:45-10:15 retries."""
     if not (cfg.telegram_token and cfg.telegram_chat_id):

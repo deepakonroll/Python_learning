@@ -4,13 +4,15 @@
 `MCX:CRUDEOIL~env@17:00-22:00`, both on Magic Envelope; crude alerts gated
 17:00–22:05 IST. NG off — add `MCX:NATURALGAS` back any time to re-enable it):**
 
-**Weekly rotation (card v4):** Tue = **NIFTY 0DTE strangle** · Thu =
-**SENSEX 0DTE strangle** · Mon/Wed/Fri = **envelope pilot card** (NIFTY +
-crude — charts checked on NIFTY only). The envelope itself runs **every day**;
-on Tue/Thu a **09:45 alert** is added: 1-strike-OTM CE+PE, indicative
-premiums, 2× stop levels, ₹10k sizing, 15:15 square-off. SENSEX feed:
-TradingView `BSE:SENSEX` → Yahoo `^BSESN`, both verified against the press
-close (see `nse_alerts/expiry.py`).
+**Weekly rotation (card v5):** every weekday is an intraday-strangle entry
+day — NIFTY Fri/Mon/Tue (expires Tue), SENSEX Wed/Thu (expires Thu): closer
+0.95% OTM strikes, credit floor ₹18/₹40, 20 lots fixed, whole-position stop
+−0.5C (−1.0C on NIFTY 0-DTE), target = session decay to 15:15. Thu = SENSEX
+**NO ENTRY** (measured E<0 at every VIX). The envelope pilot runs **every
+day** (NIFTY + crude — charts checked on NIFTY only) and a **09:45 alert**
+fires each trading day with the day's decision. SENSEX feed: TradingView
+`BSE:SENSEX` → Yahoo `^BSESN`, both verified against the press close (see
+`nse_alerts/expiry.py`).
 
 | Watch | Exchange | Session (IST, Mon–Fri) | Data source |
 |---|---|---|---|
@@ -125,19 +127,21 @@ python main.py --verbose                 # debug logging
   09:00 open** while every session is closed sends `🧪 manual run · … out of
   session` — instant proof-of-life. Scheduled runs, external-cron dispatches
   and post-close runs stay quiet (no nightly notes).
-- **08:45 plan card (v4)**: the first run between 08:45–09:10 sends the day's
-  discipline card once per trading day — rotation-aware: Tue = NIFTY strangle
-  card, Thu = SENSEX strangle card, Mon/Wed/Fri = envelope pilot card. The
-  09:10 end is a CI-startup grace — a dispatch triggered at 08:59 only
-  *executes* after ~09:00. Primary tick: cron-job.org job `45,50,55 8 * * 1-5`
-  (Asia/Kolkata); the 09:00/09:05 main-cron ticks and the workflow schedule
-  back it up.
-- **09:45 expiry entry alert (Tue/Thu)**: rotation day → spot → ATM ±1 strike
-  → indicative Black-Scholes premiums (India VIX, r=0) → **2× stop levels** +
-  ₹10k sizing (1–2 lots) + the 15:15 square-off rule. Once per day (dedupe key
-  `expiry_alert_date`); a failed send retries every 5-min tick until 10:15.
-  The envelope is **never paused** — it keeps evaluating and alerting every
-  day; tripwires and the daily heartbeat are unaffected.
+- **08:45 plan card (v5)**: the first run between 08:45–09:10 sends the day's
+  discipline card once per trading day — every weekday leads with its
+  strangle plan (NIFTY Fri/Mon/Tue, SENSEX Wed/Thu, Thu = NO ENTRY reminder)
+  plus the envelope-pilot rules. The 09:10 end is a CI-startup grace — a
+  dispatch triggered at 08:59 only *executes* after ~09:00. Primary tick:
+  cron-job.org job `45,50,55 8 * * 1-5` (Asia/Kolkata); the 09:00/09:05
+  main-cron ticks and the workflow schedule back it up.
+- **09:45 entry alert (every trading day)**: `strike_rule()` → closer 0.95%
+  OTM CE+PE → indicative Black-Scholes premiums (India VIX, r=0) → credit
+  floor (₹18 NIFTY / ₹40 SENSEX, else SKIP) → **2× per-leg stops** +
+  whole-position stop −0.5C (−1.0C on NIFTY 0-DTE) + session-decay target +
+  20 lots fixed + 15:15 square-off (Thu SENSEX = ⛔ NO ENTRY alert). Once per
+  day (dedupe key `expiry_alert_date`); a failed send retries every 5-min
+  tick until 10:15. The envelope is **never paused** — it keeps evaluating
+  and alerting every day; tripwires and the daily heartbeat are unaffected.
 - **Trend tripwires (Nifty, all days)**: ±0.45% from the session open →
   `⚔️ … NO averaging`; ±0.8% → `🔴 TREND DAY … NO re-entry` — once per level
   per day (tuned on 60d of NIFTY 5m: 3/3 big days caught).
