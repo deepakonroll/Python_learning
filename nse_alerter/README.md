@@ -337,6 +337,7 @@ historical candles (yfinance), then stay out of the runtime. Run from
 | `python tools/vix_strangle_sweep.py` | Strangle slot grid — dist × stop × VIX × lots per weekday slot; its result fixed the card-v5 rotation (every weekday an entry day, −0.5C / −1.0C stops) | daily OHLC × 3y, session-time T |
 | `python tools/envelope_ev.py` | Envelope pilot EV/day on real paths, card rules verbatim — zero-trade days counted, so the number has no survivorship bias | 5m × 60d, NIFTY + crude |
 | `python tools/tue_5m_check.py` | Cross-checks the daily-grid verdict on **real 5m paths** where the intrabar stop order is visible: daily bars overstate stops (17–34% vs 5–9% measured — the daily model charges pre-09:45 extremes a stop that doesn't exist yet), and the 0.50% dist candidate stays **positive at all three distances** (worst-day ≈ −₹41k per entry at 10 lots — still your call) | 5m × 12 same Tuesdays, same IV ladder 11–14 |
+| `python tools/crude_ema_filter.py` | Tests the HTF EMA suggestion (only take crude envelope entries with hourly EMA20>50): **does not hold** — the gate refused a +EV stream and flipped the pilot negative. Side finding: crude's pilot EV is window-unstable (₹4,598→Rs7/day gross when the 60d window rolled — net negative after 0.5pt cost) | 5m × 60d, gate on completed 1h bars |
 
 Findings feed decisions, not code: rotation/tuning changes (e.g. closer
 strikes on expiry) land in `nse_alerts/expiry.py` (`strike_rule()`) only
