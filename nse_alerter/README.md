@@ -314,7 +314,7 @@ Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$false
 
 ```powershell
 cd d:\Cursor\python_for_java_devs\nse_alerter
-python -m pytest                # 45 tests, all offline (synthetic candles, mocked HTTP)
+python -m pytest                # 173 tests, all offline (synthetic candles, mocked HTTP)
 ```
 
 | Symptom | Fix |
@@ -325,7 +325,24 @@ python -m pytest                # 45 tests, all offline (synthetic candles, mock
 | Alert repeated after restart | expected only if the side genuinely flipped back while the app was down |
 | Wrong feed in alert text | `src=` tells you: `tv`=futures, `yahoo`=spot proxy, `kite`=your Zerodha data |
 
-## 9. Roadmap / extension points
+## 9. Research tools (offline EV checks — `tools/`)
+
+Separate from the bot: they measure whether the playbook is +EV on
+historical candles (yfinance), then stay out of the runtime. Run from
+`nse_alerter/`; the first run downloads data and caches it 24h in
+`tools/_data/` (gitignored, no `.env` needed).
+
+| Run | Answers | Basis |
+|---|---|---|
+| `python tools/vix_strangle_sweep.py` | Strangle slot grid — dist × stop × VIX × lots per weekday slot; its result fixed the card-v5 rotation (every weekday an entry day, −0.5C / −1.0C stops) | daily OHLC × 3y, session-time T |
+| `python tools/envelope_ev.py` | Envelope pilot EV/day on real paths, card rules verbatim — zero-trade days counted, so the number has no survivorship bias | 5m × 60d, NIFTY + crude |
+| `python tools/tue_5m_check.py` | Cross-checks the daily-grid verdict on **real 5m paths** where the intrabar stop order is visible: daily bars overstate stops (17–34% vs 5–9% measured — the daily model charges pre-09:45 extremes a stop that doesn't exist yet), and the 0.50% dist candidate stays **positive at all three distances** (worst-day ≈ −₹41k per entry at 10 lots — still your call) | 5m × 12 same Tuesdays, same IV ladder 11–14 |
+
+Findings feed decisions, not code: rotation/tuning changes (e.g. closer
+strikes on expiry) land in `nse_alerts/expiry.py` (`strike_rule()`) only
+when you say go.
+
+## 10. Roadmap / extension points
 
 - **Email / ntfy push**: add a sibling function in `nse_alerts/notify.py`
   (SMTP via stdlib, or `POST https://ntfy.sh/<topic>`) and call it next to
