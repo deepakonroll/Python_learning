@@ -1,8 +1,9 @@
 # Futures 5m Alerter — NIFTY (NSE) + Crude / Natural Gas (MCX) → Telegram
 
 **Instruments (`SYMBOLS=`, comma list — default: `NIFTY1!~env` +
-`MCX:CRUDEOIL~env@17:00-22:00`, both on Magic Envelope; crude alerts gated
-17:00–22:05 IST. NG off — add `MCX:NATURALGAS` back any time to re-enable it):**
+`MCX:CRUDEOIL~both@17:00-22:00`; crude runs **QQE flip + EMA20 cross** alerts
+with the env flip/prep **OFF** since 2026-10-17, gated 17:00–22:05 IST.
+NG off — add `MCX:NATURALGAS` back any time to re-enable it):**
 
 **Weekly rotation (card v5):** every weekday is an intraday-strangle entry
 day — NIFTY Fri/Mon/Tue (expires Tue), SENSEX Wed/Thu (expires Thu): closer
@@ -30,7 +31,7 @@ though prices differ (USD vs INR). Exact MCX contracts come later via Kite (§6)
 | **`qqe`** *(default)* | Ported **"QQE signals"** Pine script (colinmck): Wilders-RSI → smoothed ATR-of-RSI bands; alert when the trailing line flips across RSIndex → `BUY` (Long) / `SELL` (Short). Smoother, fewer whipsaws (~5 flips/day on recent NIFTY data vs EMA20's ~11). |
 | `env` | **Magic Envelope** port: SMA20 ± `ENVELOPE_PERCENT` band (0.2%); a *full bar* beyond the band flips the side (carry-forward). Backtest on a month of 5m bars: **crude 5.3 flips/day (3–7, no dead days)**, NIFTY 0.5/day — tune per symbol. Attach per-watch with `SYMBOLS … ~env` or run globally via `/strategy env`. **Prep heads-up**: while an env watch is live, the *forming* bar beyond the band sends a one-off `⚠️ ENV pre-flip · … flip PENDING` within one cron tick — state never moves on prep, and a completed bar closing back inside the band re-arms the episode (`PREP_ALERTS=false` opts out). |
 | `ema20` | The original rule: 5m close flips below→above EMA20 → `BUY`, above→below → `SELL`. |
-| `both` | Both engines run side by side with **independent dedupe state** (`NIFTY1!` and `NIFTY1!#qqe`), one daily heartbeat. |
+| `both` | Both engines run side by side with **independent dedupe state** (`NIFTY1!` and `NIFTY1!#qqe`), one daily heartbeat. **Crude's default** (`MCX:CRUDEOIL~both`): every QQE flip and every EMA20 cross alerts (both directions, multiple alerts/day by design) — no env flip or prep heads-up for crude. |
 
 Alerts are flip-based only (silent while the side stays the same), delivered to
 **Telegram** (push on your phone), deduplicated via local state. Cloud toggle:

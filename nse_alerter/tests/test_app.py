@@ -299,6 +299,53 @@ def test_both_strategies_baseline_with_single_heartbeat(rig):
     assert len(sent.messages) == 1                          # still one
 
 
+def test_default_crude_watch_alerts_qqe_and_ema_without_env(rig, monkeypatch):
+    """Owner call 2026-10-17: default SYMBOLS moved crude ~env -> ~both.
+    Inside crude's 17:00-22:00 window a rising->falling path must fire BOTH
+    engine flips (QQE signals + EMA20 cross) and produce zero env/prep
+    artifacts - NIFTY's ~env is untouched and gated out at this hour."""
+    from dataclasses import replace
+    from datetime import datetime
+
+    from nse_alerts.config import SYMBOLS_DEFAULT, parse_watches
+    from nse_alerts.market_hours import IST
+    from tests.conftest import make_candles, rising
+
+    cfg, provider, sent = rig
+    cfg = replace(cfg, watches=parse_watches(SYMBOLS_DEFAULT))
+
+    def run_at(when, df):
+        monkeypatch.setattr(app, "now_ist", lambda: when)
+        provider.df = df
+        assert app.run(cfg) == 0
+
+    # crude window open -> silent baseline on a rising path (QQE needs 72+)
+    run_at(datetime(2026, 9, 28, 18, 0, tzinfo=IST),
+           make_candles(rising(150), start="2026-09-28 09:15", minutes=1))
+    states = StateStore(cfg.state_file).load()
+    assert "MCX:CRUDEOIL" in states                 # ema20 key (base)
+    assert "MCX:CRUDEOIL#qqe" in states             # dedicated QQE key
+    assert "MCX:CRUDEOIL#env" not in states         # env engine never runs
+    assert not [t for _, _, t in sent.messages
+                if t.startswith(("BUY MCX", "SELL MCX")) or "pre-flip" in t]
+
+    # same day: rise THEN crash - a pure-down frame never flips QQE (the
+    # longband just tracks RSIndex down; the cross needs the band to have
+    # ratcheted up first). ema20 flips on the close < EMA20 leg either way.
+    peak = [100.0 + 0.5 * i for i in range(80)]
+    crash = [peak[-1] - 0.8 * i for i in range(1, 61)]
+    run_at(datetime(2026, 9, 28, 18, 5, tzinfo=IST),
+           make_candles(peak + crash, start="2026-09-28 12:00", minutes=1))
+    crude = [t for _, _, t in sent.messages if "MCX:CRUDEOIL" in t]
+    flips = [t for t in crude if t.startswith(("BUY MCX", "SELL MCX"))]
+    assert len(flips) == 2                           # one alert per engine
+    assert all(t.startswith("SELL MCX:CRUDEOIL") for t in flips)
+    assert any("EMA20 cross" in t for t in flips)
+    assert any("QQE signals" in t for t in flips)
+    assert not [t for t in crude if "ENV pre-flip" in t
+                or "Magic Envelope" in t]            # env fully off for crude
+
+
 def test_qqe_mode_ignores_ema_data_length_requirements(rig):
     from tests.conftest import make_candles
 

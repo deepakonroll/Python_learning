@@ -76,15 +76,15 @@ TV_SYMBOL_OVERRIDES: dict[str, str] = {
     "MCX:CRUDEOILM": "TVC:UKOIL",
 }
 
-SYMBOLS_DEFAULT = "NIFTY1!~env,MCX:CRUDEOIL~env@17:00-22:00"  # BOTH on Magic
-                                             # Envelope: NIFTY's BLUE/RED
-                                             # cross = strangle regime switch;
-                                             # crude gated 17:00-22:00 IST
-                                             # (+5 min close grace); NG off
+SYMBOLS_DEFAULT = "NIFTY1!~env,MCX:CRUDEOIL~both@17:00-22:00"
+# NIFTY on Magic Envelope: BLUE/RED cross = strangle regime switch.
+# Crude on BOTH engines (owner call 2026-10-17): QQE flip + EMA20 cross
+# alerts in both directions; env flip and pre-flip prep OFF for crude.
+# Gated 17:00-22:00 IST (+5 min close grace); NG off.
 
 
 def parse_watches(raw: str) -> tuple[Watch, ...]:
-    """'NIFTY1!,MCX:CRUDEOIL~env>BZ=F,...' -> Watch tuple.
+    """'NIFTY1!,MCX:CRUDEOIL~both>BZ=F,...' -> Watch tuple.
 
     Entry forms:  SYMBOL                      (must be in DEFAULT_WATCHES)
                   EXCHANGE:SYMBOL             (proxy from DEFAULT_WATCHES if known)
