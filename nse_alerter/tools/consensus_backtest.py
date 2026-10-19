@@ -1,11 +1,19 @@
-"""Consensus backtest: last N trading days for NIFTY ~both (EMA20+QQE)."""
+"""Consensus backtest: last N trading days for NIFTY ~both (EMA20+QQE).
+
+Computes side series once (vectorized EMA20, single-pass QQE), then
+detects consensus flips — no bar-by-bar evaluate() loop.
+
+Run from nse_alerter/:  python tools/consensus_backtest.py
+"""
 from __future__ import annotations
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import numpy as np
 import pandas as pd
 import yfinance as yf
-from nse_alerts.signals import evaluate
+from nse_alerts.signals import side_series
+from nse_alerts.qqe import qqe_side
 
 DATA_DIR = Path(__file__).parent / "_data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -18,12 +26,6 @@ NSE_O, NSE_C = 9*60+15, 15*60+30
 
 def _bm(t):
     return t.hour * 60 + t.minute
-
-def _kw(strat):
-    return dict(symbol="NIFTY1!", ema_len=EMA_LEN, strategy=strat,
-                rsi_period=QQE_RSI, sf=QQE_SF, factor=QQE_F,
-                source="yahoo", envelope_len=20, envelope_percent=0.2,
-                envelope_exponential=False)
 
 def fetch_data():
     if CACHE.exists():
@@ -56,33 +58,30 @@ def run_backtest():
     print(f"Engines: EMA20(len={EMA_LEN}) + QQE(RSI={QQE_RSI},SF={QQE_SF},F={QQE_F})")
     print(f"{'='*80}\n")
 
-    strats = ("ema20", "qqe")
-    pre = candles[candles.index.date < tdays[0]]
-    engine_prevs = {}
-    for s in strats:
-        _, side = evaluate(pre, prev_side=None, **_kw(s))
-        engine_prevs[s] = side
-        print(f"  warm-up: {s} entering side = {side}")
+    closes = candles["Close"]
+    ema_sides = side_series(closes, EMA_LEN)
+    qqe_sides = qqe_side(closes, QQE_RSI, QQE_SF, QQE_F)
 
     cprev = None
     signals = []
-    ebars = candles[candles.index.date >= tdays[0]]
+    first_date = tdays[0]
 
-    for i in range(len(ebars)):
-        bt = ebars.index[i]
-        cum = pd.concat([candles[:bt], ebars.iloc[[i]]])
-        esides = {}
-        for s in strats:
-            _, side = evaluate(cum, prev_side=engine_prevs[s], **_kw(s))
-            engine_prevs[s] = side
-            esides[s] = side
-        ss = set(esides.values())
-        if len(ss) == 1:
-            agreed = ss.pop()
+    for i in range(len(candles)):
+        if candles.index[i].date() < first_date:
+            ev = int(ema_sides.iloc[i])
+            qv = int(qqe_sides.iloc[i])
+            if ev == qv:
+                cprev = "UP" if ev == 1 else "DOWN"
+            continue
+        ev = int(ema_sides.iloc[i])
+        qv = int(qqe_sides.iloc[i])
+        if ev == qv:
+            agreed = "UP" if ev == 1 else "DOWN"
             if cprev is not None and agreed != cprev:
                 alert = "BUY" if agreed == "UP" else "SELL"
-                cl = float(ebars["Close"].iloc[i])
-                signals.append(dict(date=bt.date(), time=bt,
+                cl = float(closes.iloc[i])
+                signals.append(dict(date=candles.index[i].date(),
+                                    time=candles.index[i],
                                     side=alert, direction=agreed,
                                     close=cl, bar_idx=i))
             cprev = agreed
@@ -90,7 +89,6 @@ def run_backtest():
     if not signals:
         print("\nNo consensus signals fired!")
         return
-
 
     print(f"Total consensus signals: {len(signals)}\n")
     hdr = f"{'Date':>10} {'Time':>6} {'Side':>5} {'Close':>10}"
@@ -104,8 +102,8 @@ def run_backtest():
         line = f"{sig['date']!s:>10} {sig['time'].strftime('%H:%M'):>6} {sig['side']:>5} {sig['close']:>10.2f}"
         for hn, hb in HORIZONS.items():
             fi = sig["bar_idx"] + hb
-            if fi < len(ebars):
-                fc = float(ebars["Close"].iloc[fi])
+            if fi < len(candles):
+                fc = float(candles["Close"].iloc[fi])
                 ch = fc - sig["close"]
                 ok = (ch > 0) if sig["direction"] == "UP" else (ch < 0)
                 pct = (ch / sig["close"]) * 100
@@ -137,8 +135,8 @@ def run_backtest():
     for sig in signals:
         # find last bar of same day
         day = sig["date"]
-        day_mask = ebars.index.date == day
-        last_close = float(ebars.loc[day_mask, "Close"].iloc[-1])
+        day_mask = candles.index.date == day
+        last_close = float(candles.loc[day_mask, "Close"].iloc[-1])
         ch = last_close - sig["close"]
         ok = (ch > 0) if sig["direction"] == "UP" else (ch < 0)
         pct = (ch / sig["close"]) * 100
@@ -160,9 +158,9 @@ def run_backtest():
             c = w = 0
             for s in ss2:
                 fi = s["bar_idx"] + hb
-                if fi >= len(ebars):
+                if fi >= len(candles):
                     continue
-                fc = float(ebars["Close"].iloc[fi])
+                fc = float(candles["Close"].iloc[fi])
                 ch = fc - s["close"]
                 if ((s["direction"] == "UP" and ch > 0)
                         or (s["direction"] == "DOWN" and ch < 0)):
