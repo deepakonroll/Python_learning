@@ -221,8 +221,11 @@ def _status_text(store: StateStore, cfg: Config) -> str:
     lines.append(f"🔭 Watching: {watch_list}")
     allowed: set[str] = set()                    # only CURRENT (watch, strategy)
     for w in cfg.watches:                        # keys - stale switches hidden
-        for s in strategies_for(eff if override else (w.strategy or eff)):
+        w_strats = strategies_for(eff if override else (w.strategy or eff))
+        for s in w_strats:
             allowed.add(w.key if s == "ema20" else f"{w.key}#{s}")
+        if len(w_strats) > 1:                   # ~both → consensus key
+            allowed.add(f"{w.key}#both")
     for key in sorted(states):
         if key not in allowed:
             continue

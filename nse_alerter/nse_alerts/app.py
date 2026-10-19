@@ -155,6 +155,229 @@ def split_forming(candles, interval_minutes: int, now: datetime):
     return candles, None
 
 
+class _RetrySignal(Exception):
+    """Raised by _run_single / _run_consensus on Telegram send failure
+    so the caller (run()) can return exit code 2."""
+
+
+def _run_single(cfg, store, states, watch, strats, candles, source,
+                bar_iso, today, dry_run, now, forming):
+    """Single-engine path (ema20 / qqe / env) — original loop logic."""
+    watch_ok = False
+    for index, strat in enumerate(strats):
+        key = watch.key if strat == "ema20" else f"{watch.key}#{strat}"
+        stored = states.get(key)
+        if (stored is not None and stored.last_processed_bar
+                and candles.index[-1]
+                < datetime.fromisoformat(stored.last_processed_bar)):
+            log.warning("stale window for %s (ends %s, stored %s) - skipped",
+                        key, candles.index[-1], stored.last_processed_bar)
+            watch_ok = True
+            continue
+        prev_side = stored.last_side if stored else None
+        try:
+            event, current_side = evaluate(
+                candles, symbol=watch.key, ema_len=cfg.ema_len,
+                prev_side=prev_side, source=source, strategy=strat,
+                rsi_period=cfg.qqe_rsi_period, sf=cfg.qqe_sf,
+                factor=cfg.qqe_factor, envelope_len=cfg.envelope_len,
+                envelope_percent=cfg.envelope_percent,
+                envelope_exponential=cfg.envelope_exponential)
+        except SignalError as exc:
+            log.error("signal evaluation failed (%s, %s): %s",
+                      watch.key, strat, exc)
+            break
+        watch_ok = True
+        if event is None:
+            if stored is None:
+                log.info("baseline%s: %s [%s] side=%s (no alert on first run)",
+                         " (dry-run, not saved)" if dry_run else "",
+                         key, strat, current_side)
+            else:
+                log.info("no cross - %s [%s] side=%s bar=%s",
+                         key, strat, current_side, bar_iso)
+            if not dry_run:
+                new_day = stored is None or stored.last_seen_date != today
+                prep_fired = stored.prep_fired if stored else False
+                if cfg.prep_alerts and strat == "env":
+                    prep_fired = _prep_alert(
+                        cfg, watch.key, candles, forming, current_side,
+                        prep_fired, source)
+                store.put(key, SymbolState(
+                    last_side=current_side, last_processed_bar=bar_iso,
+                    last_event_side=stored.last_event_side if stored else "",
+                    last_event_bar=stored.last_event_bar if stored else "",
+                    history=stored.history if stored else [],
+                    last_seen_date=today, prep_fired=prep_fired))
+                if new_day and index == 0:
+                    _heartbeat(cfg, current_side, bar_iso, source,
+                               strats[0], watch.key)
+            continue
+        text = event.message()
+        if dry_run:
+            log.info("[dry-run] would send:\n%s", text)
+            continue
+        try:
+            assert cfg.telegram_token and cfg.telegram_chat_id
+            send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+        except NotifyError as exc:
+            log.error("telegram send failed (%s, will retry next run): %s",
+                      watch.key, exc)
+            raise _RetrySignal()
+        state = stored or SymbolState(last_side=current_side)
+        state.last_side = current_side
+        state.last_processed_bar = bar_iso
+        state.last_seen_date = today
+        state.record_event(event.side, event.bar_time.isoformat())
+        store.put(key, state)
+        log.info("sent %s alert [%s] for %s (bar %s)",
+                 event.side, strat, watch.key,
+                 event.bar_time.strftime("%H:%M"))
+    return watch_ok
+
+
+def _run_consensus(cfg, store, states, watch, strats, candles, source,
+                   bar_iso, today, dry_run, now, forming, ok):
+    """Consensus mode (~both): alert only when ALL engines agree on the
+    same direction.  Individual engine sides are persisted for warm-up
+    continuity and diagnosis; the #both key tracks the agreed direction."""
+    watch_ok = False
+    both_key = f"{watch.key}#both"
+    consensus_stored = states.get(both_key)
+    if (consensus_stored is not None and consensus_stored.last_processed_bar
+            and candles.index[-1]
+            < datetime.fromisoformat(consensus_stored.last_processed_bar)):
+        log.warning("stale window for %s (ends %s, stored %s) - skipped",
+                    both_key, candles.index[-1],
+                    consensus_stored.last_processed_bar)
+        return True
+    consensus_prev = consensus_stored.last_side if consensus_stored else None
+    engine_sides: dict[str, str] = {}
+    engine_events: dict[str, object] = {}
+    any_error = False
+    for strat in strats:
+        key = watch.key if strat == "ema20" else f"{watch.key}#{strat}"
+        stored = states.get(key)
+        prev_side = stored.last_side if stored else None
+        try:
+            event, current_side = evaluate(
+                candles, symbol=watch.key, ema_len=cfg.ema_len,
+                prev_side=prev_side, source=source, strategy=strat,
+                rsi_period=cfg.qqe_rsi_period, sf=cfg.qqe_sf,
+                factor=cfg.qqe_factor, envelope_len=cfg.envelope_len,
+                envelope_percent=cfg.envelope_percent,
+                envelope_exponential=cfg.envelope_exponential)
+        except SignalError as exc:
+            log.error("signal evaluation failed (%s, %s): %s",
+                      watch.key, strat, exc)
+            any_error = True
+            break
+        watch_ok = True
+        engine_sides[strat] = current_side
+        engine_events[strat] = event
+        if not dry_run:
+            store.put(key, SymbolState(
+                last_side=current_side, last_processed_bar=bar_iso,
+                last_event_side=(stored.last_event_side if stored else ""),
+                last_event_bar=(stored.last_event_bar if stored else ""),
+                history=(stored.history if stored else []),
+                last_seen_date=today,
+                prep_fired=(stored.prep_fired if stored else False)))
+            if stored is None:
+                log.info("baseline: %s [%s] side=%s (no alert on first run)",
+                         key, strat, current_side)
+    if any_error or not engine_sides:
+        return watch_ok
+    return _consensus_decide(
+        watch, strats, engine_sides, engine_events, candles, source,
+        bar_iso, today, dry_run, store, states, cfg, consensus_stored,
+        consensus_prev, both_key, watch_ok)
+
+
+def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
+                      source, bar_iso, today, dry_run, store, states, cfg,
+                      consensus_stored, consensus_prev, both_key, watch_ok):
+    """Check engine agreement, fire consensus alert if all agree & direction changed."""
+    from .signals import CrossEvent
+    sides_set = set(engine_sides.values())
+    consensus_event = None
+    if len(sides_set) == 1:
+        agreed_side = sides_set.pop()
+        if consensus_prev is None:
+            log.info("baseline: %s consensus side=%s (no alert on first run)",
+                     both_key, agreed_side)
+            consensus_cur = agreed_side
+        elif agreed_side != consensus_prev:
+            consensus_cur = agreed_side
+            alert_side = "BUY" if consensus_cur == "UP" else "SELL"
+            parts = []
+            for strat in strats:
+                ev = engine_events.get(strat)
+                lbl = STRATEGY_LABELS.get(strat, strat)
+                if ev and ev.rule:
+                    parts.append(f"{lbl}: {ev.rule}")
+                else:
+                    parts.append(f"{lbl}: side={engine_sides[strat]}")
+            combined_rule = " | ".join(parts)
+            close = float(candles["Close"].iloc[-1])
+            bar_time = candles.index[-1].to_pydatetime()
+            consensus_event = CrossEvent(
+                symbol=watch.key, side=alert_side,
+                prev_side=consensus_prev, bar_time=bar_time,
+                close=close, ema=0.0, source=source,
+                strategy="both", rule=combined_rule)
+        else:
+            consensus_cur = agreed_side
+            log.info("no consensus flip - %s side=%s bar=%s",
+                     both_key, consensus_cur, bar_iso)
+    else:
+        consensus_cur = consensus_prev or "UP"
+        diag = ", ".join(f"{s}={engine_sides[s]}" for s in strats)
+        log.info("engines disagree for %s (%s) - no alert", watch.key, diag)
+
+    if not dry_run:
+        new_day = (consensus_stored is None
+                   or consensus_stored.last_seen_date != today)
+        store.put(both_key, SymbolState(
+            last_side=consensus_cur, last_processed_bar=bar_iso,
+            last_event_side=(
+                (consensus_stored.last_event_side if consensus_stored else "")
+                if consensus_event is None else consensus_event.side),
+            last_event_bar=(
+                (consensus_stored.last_event_bar if consensus_stored else "")
+                if consensus_event is None
+                else consensus_event.bar_time.isoformat()),
+            history=(consensus_stored.history if consensus_stored else []),
+            last_seen_date=today, prep_fired=False))
+        if new_day:
+            _heartbeat(cfg, consensus_cur, bar_iso, source, "both", watch.key)
+
+    if consensus_event is not None:
+        text = consensus_event.message()
+        if dry_run:
+            log.info("[dry-run] would send:\n%s", text)
+        else:
+            try:
+                assert cfg.telegram_token and cfg.telegram_chat_id
+                send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+            except NotifyError as exc:
+                log.error("telegram send failed (%s, will retry): %s",
+                          watch.key, exc)
+                raise _RetrySignal()
+            if not dry_run:
+                cs = consensus_stored or SymbolState(last_side=consensus_cur)
+                cs.last_side = consensus_cur
+                cs.last_processed_bar = bar_iso
+                cs.last_seen_date = today
+                cs.record_event(consensus_event.side,
+                                consensus_event.bar_time.isoformat())
+                store.put(both_key, cs)
+            log.info("sent %s alert [both] for %s (bar %s)",
+                     consensus_event.side, watch.key,
+                     consensus_event.bar_time.strftime("%H:%M"))
+    return watch_ok
+
+
 def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         verbose: bool = False) -> int:
     configure_logging(verbose, cfg.log_file)
@@ -191,11 +414,15 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     # Purge stale strategy keys (e.g. MCX:CRUDEOIL#env left over after a
     # ~env → ~both switch).  A key is stale when it matches a watch prefix
     # but doesn't correspond to any engine currently configured for that watch.
+    # For ~both watches, the #both consensus key is also expected.
     _expected_keys: set[str] = set()
     for _w in cfg.watches:
         _eff = effective if override else (_w.strategy or effective)
-        for _s in strategies_for(_eff):
+        _strats = strategies_for(_eff)
+        for _s in _strats:
             _expected_keys.add(_w.key if _s == "ema20" else f"{_w.key}#{_s}")
+        if len(_strats) > 1:               # ~both → consensus key
+            _expected_keys.add(f"{_w.key}#both")
     _stale = [k for k in states if k not in _expected_keys
               and any(k.startswith(_w.key) for _w in cfg.watches)]
     if _stale:
@@ -263,94 +490,22 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         watch_ok = False
         strats = strategies_for(effective if override
                                 else (watch.strategy or effective))
-        for index, strat in enumerate(strats):
-            # dedicated state key per (watch, strategy) so toggling never mixes
-            key = watch.key if strat == "ema20" else f"{watch.key}#{strat}"
-            stored = states.get(key)
-            if (stored is not None and stored.last_processed_bar
-                    and candles.index[-1]
-                    < datetime.fromisoformat(stored.last_processed_bar)):
-                # feed returned a window OLDER than what we already processed
-                # (mid-day feed hiccup) - evaluating it would fabricate flips.
-                # Equal bars are fine: same data -> same side, and the
-                # new-day heartbeat still gets its chance.
-                log.warning("stale window for %s (ends %s, stored %s) - skipped",
-                            key, candles.index[-1], stored.last_processed_bar)
-                watch_ok = True
-                continue
-            prev_side = stored.last_side if stored else None
+        is_consensus = len(strats) > 1          # ~both → consensus gate
+
+        if is_consensus:
             try:
-                event, current_side = evaluate(
-                    candles,
-                    symbol=watch.key,
-                    ema_len=cfg.ema_len,
-                    prev_side=prev_side,
-                    source=source,
-                    strategy=strat,
-                    rsi_period=cfg.qqe_rsi_period,
-                    sf=cfg.qqe_sf,
-                    factor=cfg.qqe_factor,
-                    envelope_len=cfg.envelope_len,
-                    envelope_percent=cfg.envelope_percent,
-                    envelope_exponential=cfg.envelope_exponential,
-                )
-            except SignalError as exc:
-                log.error("signal evaluation failed (%s, %s): %s",
-                          watch.key, strat, exc)
-                break                               # counts as failed below
-            watch_ok = True
-
-            if event is None:
-                if stored is None:
-                    log.info("baseline%s: %s [%s] side=%s (no alert on first run)",
-                             " (dry-run, not saved)" if dry_run else "",
-                             key, strat, current_side)
-                else:
-                    log.info("no cross - %s [%s] side=%s bar=%s",
-                             key, strat, current_side, bar_iso)
-                if not dry_run:
-                    new_day = stored is None or stored.last_seen_date != today
-                    prep_fired = stored.prep_fired if stored else False
-                    if cfg.prep_alerts and strat == "env":
-                        prep_fired = _prep_alert(
-                            cfg, watch.key, candles, forming, current_side,
-                            prep_fired, source)
-                    store.put(key, SymbolState(
-                        last_side=current_side,
-                        last_processed_bar=bar_iso,
-                        last_event_side=stored.last_event_side if stored else "",
-                        last_event_bar=stored.last_event_bar if stored else "",
-                        history=stored.history if stored else [],
-                        last_seen_date=today,
-                        prep_fired=prep_fired,
-                    ))
-                    if new_day and index == 0:
-                        _heartbeat(cfg, current_side, bar_iso, source,
-                                   strats[0], watch.key)  # once/day per watch
-                continue
-
-            text = event.message()
-            if dry_run:
-                log.info("[dry-run] would send:\n%s", text)
-                continue
-
+                watch_ok = _run_consensus(
+                    cfg, store, states, watch, strats, candles, source,
+                    bar_iso, today, dry_run, now, forming, ok)
+            except _RetrySignal:
+                return 2
+        else:
             try:
-                assert cfg.telegram_token and cfg.telegram_chat_id  # guarded above
-                send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
-            except NotifyError as exc:
-                log.error("telegram send failed (%s, will retry next run): %s",
-                          watch.key, exc)
-                return 2                   # that state untouched -> retried
-
-            state = stored or SymbolState(last_side=current_side)
-            state.last_side = current_side
-            state.last_processed_bar = bar_iso
-            state.last_seen_date = today    # the alert itself proves liveness
-            state.record_event(event.side, event.bar_time.isoformat())
-            store.put(key, state)
-            log.info("sent %s alert [%s] for %s (bar %s)",
-                     event.side, strat, watch.key,
-                     event.bar_time.strftime("%H:%M"))
+                watch_ok = _run_single(
+                    cfg, store, states, watch, strats, candles, source,
+                    bar_iso, today, dry_run, now, forming)
+            except _RetrySignal:
+                return 2
 
         if watch_ok:
             ok += 1
@@ -625,39 +780,114 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
     strats = strategies_for(eff)
 
     all_events: list = []
-    for strat in strats:
-        label = STRATEGY_LABELS.get(strat, strat)
+    is_consensus = len(strats) > 1
+
+    if is_consensus:
+        # Consensus replay: walk both engines bar-by-bar, alert only
+        # when ALL engines agree and the agreed direction changes.
         print(f"Replay {watch.key} · {target.isoformat()} · {cfg.interval} "
-              f"{label} · feed={source} · {len(day_bars)} bars that day")
-        if strat == "env":
-            min_pre = cfg.envelope_len + 2
-        elif strat == "ema20":
-            min_pre = cfg.ema_len + 2
-        else:
-            min_pre = 72                               # QQE warm-up
-        if len(pre) < min_pre:
-            print(f"insufficient warm-up before the session ({len(pre)} bars) - "
-                  f"try DATA_PROVIDER=yahoo (deeper history)")
-            return []
+              f"both (consensus) · feed={source} · {len(day_bars)} bars that day")
+        for strat in strats:
+            if strat == "env":
+                min_pre = cfg.envelope_len + 2
+            elif strat == "ema20":
+                min_pre = cfg.ema_len + 2
+            else:
+                min_pre = 72
+            if len(pre) < min_pre:
+                print(f"insufficient warm-up before the session ({len(pre)} bars) - "
+                      f"try DATA_PROVIDER=yahoo (deeper history)")
+                return []
 
-        kwargs = dict(symbol=watch.key, ema_len=cfg.ema_len, strategy=strat,
-                      rsi_period=cfg.qqe_rsi_period, sf=cfg.qqe_sf,
-                      factor=cfg.qqe_factor, source=source,
-                      envelope_len=cfg.envelope_len,
-                      envelope_percent=cfg.envelope_percent,
-                      envelope_exponential=cfg.envelope_exponential)
-        _, entry = evaluate(pre, prev_side=None, **kwargs)
-        print(f"entering side: {entry}")
+        engine_prevs: dict[str, str] = {}
+        for strat in strats:
+            kwargs = dict(symbol=watch.key, ema_len=cfg.ema_len, strategy=strat,
+                          rsi_period=cfg.qqe_rsi_period, sf=cfg.qqe_sf,
+                          factor=cfg.qqe_factor, source=source,
+                          envelope_len=cfg.envelope_len,
+                          envelope_percent=cfg.envelope_percent,
+                          envelope_exponential=cfg.envelope_exponential)
+            _, entry = evaluate(pre, prev_side=None, **kwargs)
+            engine_prevs[strat] = entry
+            print(f"  {STRATEGY_LABELS.get(strat, strat)} entering side: {entry}")
 
-        events, prev, pos = [], entry, len(pre)
+        consensus_prev: str | None = None
+        pos = len(pre)
         for i in range(pos, len(candles)):
-            event, prev = evaluate(candles.iloc[:i + 1], prev_side=prev, **kwargs)
-            if event:
-                events.append(event)
-                print(f"  {event.bar_time:%H:%M}  {event.side:<4}  {event.rule}")
+            engine_sides: dict[str, str] = {}
+            for strat in strats:
+                kwargs = dict(symbol=watch.key, ema_len=cfg.ema_len,
+                              strategy=strat, rsi_period=cfg.qqe_rsi_period,
+                              sf=cfg.qqe_sf, factor=cfg.qqe_factor,
+                              source=source, envelope_len=cfg.envelope_len,
+                              envelope_percent=cfg.envelope_percent,
+                              envelope_exponential=cfg.envelope_exponential)
+                _, side = evaluate(candles.iloc[:i + 1],
+                                   prev_side=engine_prevs[strat], **kwargs)
+                engine_prevs[strat] = side
+                engine_sides[strat] = side
 
-        print(f"-> {len(events)} cross(es) that day · ending side {prev}")
-        all_events.extend(events)
+            sides_set = set(engine_sides.values())
+            if len(sides_set) == 1:
+                agreed = sides_set.pop()
+                if consensus_prev is not None and agreed != consensus_prev:
+                    alert = "BUY" if agreed == "UP" else "SELL"
+                    bar_t = candles.index[i].to_pydatetime()
+                    diag = ", ".join(
+                        f"{STRATEGY_LABELS.get(s, s)}={engine_sides[s]}"
+                        for s in strats)
+                    from .signals import CrossEvent
+                    ev = CrossEvent(
+                        symbol=watch.key, side=alert,
+                        prev_side=consensus_prev, bar_time=bar_t,
+                        close=float(candles["Close"].iloc[i]),
+                        ema=0.0, source=source, strategy="both",
+                        rule=f"consensus {alert}: {diag}")
+                    all_events.append(ev)
+                    print(f"  {bar_t:%H:%M}  {alert:<4}  {ev.rule}")
+                consensus_prev = agreed
+            else:
+                diag = ", ".join(f"{s}={engine_sides[s]}" for s in strats)
+                # engines disagree - consensus stays, no alert
+                if consensus_prev is None:
+                    # first bar with disagreement - no baseline yet
+                    pass
+
+        print(f"-> {len(all_events)} consensus cross(es) that day")
+    else:
+        for strat in strats:
+            label = STRATEGY_LABELS.get(strat, strat)
+            print(f"Replay {watch.key} · {target.isoformat()} · {cfg.interval} "
+                  f"{label} · feed={source} · {len(day_bars)} bars that day")
+            if strat == "env":
+                min_pre = cfg.envelope_len + 2
+            elif strat == "ema20":
+                min_pre = cfg.ema_len + 2
+            else:
+                min_pre = 72                               # QQE warm-up
+            if len(pre) < min_pre:
+                print(f"insufficient warm-up before the session ({len(pre)} bars) - "
+                      f"try DATA_PROVIDER=yahoo (deeper history)")
+                return []
+
+            kwargs = dict(symbol=watch.key, ema_len=cfg.ema_len, strategy=strat,
+                          rsi_period=cfg.qqe_rsi_period, sf=cfg.qqe_sf,
+                          factor=cfg.qqe_factor, source=source,
+                          envelope_len=cfg.envelope_len,
+                          envelope_percent=cfg.envelope_percent,
+                          envelope_exponential=cfg.envelope_exponential)
+            _, entry = evaluate(pre, prev_side=None, **kwargs)
+            print(f"entering side: {entry}")
+
+            events, prev, pos = [], entry, len(pre)
+            for i in range(pos, len(candles)):
+                event, prev = evaluate(candles.iloc[:i + 1], prev_side=prev, **kwargs)
+                if event:
+                    events.append(event)
+                    print(f"  {event.bar_time:%H:%M}  {event.side:<4}  {event.rule}")
+
+            print(f"-> {len(events)} cross(es) that day · ending side {prev}")
+            all_events.extend(events)
 
     # chronological order when both engines fire on the same day
     all_events.sort(key=lambda e: e.bar_time)

@@ -28,7 +28,7 @@ from .envelope import envelope_lines, envelope_side
 from .qqe import MIN_QQE_BARS, qqe_lines, qqe_side
 
 STRATEGY_LABELS = {"ema20": "EMA20 cross", "qqe": "QQE signals",
-                   "env": "Magic Envelope"}
+                   "env": "Magic Envelope", "both": "EMA20+QQE consensus"}
 
 
 class SignalError(RuntimeError):
