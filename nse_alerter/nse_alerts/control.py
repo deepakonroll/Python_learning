@@ -309,7 +309,7 @@ def _apply_strategy(store: StateStore, cmd: str) -> str:
     """/strategy qqe|ema20|both|default -> persist override (keeps 'enabled')."""
     arg = cmd.split(" ", 1)[1] if " " in cmd else ""
     control = dict(store.get_control())
-    if arg in ("default", "auto", "env"):
+    if arg in ("default", "auto"):
         control.pop("strategy", None)
         store.set_control(control)
         return "🎯 /strategy default → config value restored"

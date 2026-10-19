@@ -42,7 +42,20 @@ def test_invalid_strategy_value_gets_usage_message(tmp_path):
     store = StateStore(tmp_path / "state.json")
     msg = _apply_strategy(store, "/strategy macd")
     assert msg.startswith("❌") and "qqe" in msg
-    assert "strategy" not in store.get_control()
+
+
+def test_strategy_env_sets_env_not_default(tmp_path):
+    """Regression: /strategy env must set the 'env' strategy, not reset to default."""
+    from nse_alerts.control import _apply_strategy, effective_strategy
+    from nse_alerts.config import normalize_strategy
+    from tests.conftest import make_config
+
+    store = StateStore(tmp_path / "state.json")
+    cfg = make_config(tmp_path)
+    result = _apply_strategy(store, "/strategy env")
+    assert "applied" in result, f"expected 'applied' in result, got: {result}"
+    assert store.get_control()["strategy"] == "env"
+    assert effective_strategy(cfg, store) == "env"
 
 
 def test_disable_merge_preserves_strategy_override(tmp_path):

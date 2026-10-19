@@ -9,6 +9,7 @@ Exit codes (visible in Task Scheduler's "Last Run Result"):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -186,6 +187,28 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
                   for w in cfg.watches))
 
     states = store.load()
+
+    # Purge stale strategy keys (e.g. MCX:CRUDEOIL#env left over after a
+    # ~env → ~both switch).  A key is stale when it matches a watch prefix
+    # but doesn't correspond to any engine currently configured for that watch.
+    _expected_keys: set[str] = set()
+    for _w in cfg.watches:
+        _eff = effective if override else (_w.strategy or effective)
+        for _s in strategies_for(_eff):
+            _expected_keys.add(_w.key if _s == "ema20" else f"{_w.key}#{_s}")
+    _stale = [k for k in states if k not in _expected_keys
+              and any(k.startswith(_w.key) for _w in cfg.watches)]
+    if _stale:
+        _raw = store._load_raw()
+        for _k in _stale:
+            _raw.pop(_k, None)
+        store.path.parent.mkdir(parents=True, exist_ok=True)
+        _tmp = store.path.with_suffix(".tmp")
+        _tmp.write_text(json.dumps(_raw, indent=2), encoding="utf-8")
+        os.replace(_tmp, store.path)
+        states = store.load()          # reload after purge
+        log.info("purged stale state keys: %s", ", ".join(_stale))
+
     today = now.date().isoformat()
     ok = failed = 0
 
@@ -599,38 +622,44 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
     # strategy precedence mirrors live: Telegram override > ~suffix > config
     control = StateStore(cfg.state_file).get_control()
     eff = control.get("strategy") or watch.strategy or cfg.strategy
-    strat = "ema20" if eff == "both" else eff       # replay walks the primary engine
-    label = STRATEGY_LABELS.get(strat, strat)
-    print(f"Replay {watch.key} · {target.isoformat()} · {cfg.interval} "
-          f"{label} · feed={source} · {len(day_bars)} bars that day"
-          + ("  [strategy=both -> showing ema20]" if eff == "both" else ""))
-    if strat == "env":
-        min_pre = cfg.envelope_len + 2
-    elif strat == "ema20":
-        min_pre = cfg.ema_len + 2
-    else:
-        min_pre = 72                               # QQE warm-up
-    if len(pre) < min_pre:
-        print(f"insufficient warm-up before the session ({len(pre)} bars) - "
-              f"try DATA_PROVIDER=yahoo (deeper history)")
-        return []
+    strats = strategies_for(eff)
 
-    kwargs = dict(symbol=watch.key, ema_len=cfg.ema_len, strategy=strat,
-                  rsi_period=cfg.qqe_rsi_period, sf=cfg.qqe_sf,
-                  factor=cfg.qqe_factor, source=source,
-                  envelope_len=cfg.envelope_len,
-                  envelope_percent=cfg.envelope_percent,
-                  envelope_exponential=cfg.envelope_exponential)
-    _, entry = evaluate(pre, prev_side=None, **kwargs)
-    print(f"entering side: {entry}")
+    all_events: list = []
+    for strat in strats:
+        label = STRATEGY_LABELS.get(strat, strat)
+        print(f"Replay {watch.key} · {target.isoformat()} · {cfg.interval} "
+              f"{label} · feed={source} · {len(day_bars)} bars that day")
+        if strat == "env":
+            min_pre = cfg.envelope_len + 2
+        elif strat == "ema20":
+            min_pre = cfg.ema_len + 2
+        else:
+            min_pre = 72                               # QQE warm-up
+        if len(pre) < min_pre:
+            print(f"insufficient warm-up before the session ({len(pre)} bars) - "
+                  f"try DATA_PROVIDER=yahoo (deeper history)")
+            return []
 
-    events, prev, pos = [], entry, len(pre)
-    for i in range(pos, len(candles)):
-        event, prev = evaluate(candles.iloc[:i + 1], prev_side=prev, **kwargs)
-        if event:
-            events.append(event)
-            print(f"  {event.bar_time:%H:%M}  {event.side:<4}  {event.rule}")
+        kwargs = dict(symbol=watch.key, ema_len=cfg.ema_len, strategy=strat,
+                      rsi_period=cfg.qqe_rsi_period, sf=cfg.qqe_sf,
+                      factor=cfg.qqe_factor, source=source,
+                      envelope_len=cfg.envelope_len,
+                      envelope_percent=cfg.envelope_percent,
+                      envelope_exponential=cfg.envelope_exponential)
+        _, entry = evaluate(pre, prev_side=None, **kwargs)
+        print(f"entering side: {entry}")
 
-    print(f"-> {len(events)} cross(es) that day · ending side {prev}")
-    return events
+        events, prev, pos = [], entry, len(pre)
+        for i in range(pos, len(candles)):
+            event, prev = evaluate(candles.iloc[:i + 1], prev_side=prev, **kwargs)
+            if event:
+                events.append(event)
+                print(f"  {event.bar_time:%H:%M}  {event.side:<4}  {event.rule}")
+
+        print(f"-> {len(events)} cross(es) that day · ending side {prev}")
+        all_events.extend(events)
+
+    # chronological order when both engines fire on the same day
+    all_events.sort(key=lambda e: e.bar_time)
+    return all_events
 

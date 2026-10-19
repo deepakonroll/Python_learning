@@ -315,7 +315,7 @@ Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$false
 
 ```powershell
 cd d:\Cursor\python_for_java_devs\nse_alerter
-python -m pytest                # 173 tests, all offline (synthetic candles, mocked HTTP)
+python -m pytest                # 175 tests, all offline (synthetic candles, mocked HTTP)
 ```
 
 | Symptom | Fix |
