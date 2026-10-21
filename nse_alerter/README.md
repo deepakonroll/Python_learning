@@ -6,7 +6,7 @@
 with the env flip/prep **OFF** since 2026-10-17, gated 17:00–22:05 IST.
 NG off — add `MCX:NATURALGAS` back any time to re-enable it):**
 
-**Weekly rotation (card v5):** every weekday is an intraday-strangle entry
+**Weekly rotation:** every weekday is an intraday-strangle entry
 day — NIFTY Fri/Mon/Tue (expires Tue), SENSEX Wed/Thu (expires Thu): closer
 0.95% OTM strikes, credit floor ₹18/₹40, 20 lots fixed, whole-position stop
 −0.5C (−1.0C on NIFTY 0-DTE), target = session decay to 15:15. Thu = SENSEX
@@ -129,13 +129,26 @@ python main.py --verbose                 # debug logging
   09:00 open** while every session is closed sends `🧪 manual run · … out of
   session` — instant proof-of-life. Scheduled runs, external-cron dispatches
   and post-close runs stay quiet (no nightly notes).
-- **08:45 plan card (v5)**: the first run between 08:45–09:10 sends the day's
-  discipline card once per trading day — every weekday leads with its
-  strangle plan (NIFTY Fri/Mon/Tue, SENSEX Wed/Thu, Thu = NO ENTRY reminder)
-  plus the envelope-pilot rules. The 09:10 end is a CI-startup grace — a
-  dispatch triggered at 08:59 only *executes* after ~09:00. Primary tick:
-  cron-job.org job `45,50,55 8 * * 1-5` (Asia/Kolkata); the 09:00/09:05
-  main-cron ticks and the workflow schedule back it up.
+- **09:05 world-markets update (v1)**: the 09:02–09:10 run sends the day's
+  overnight snapshot once per day (`world_date`) — 🇺🇸 Nasdaq/Dow-futures,
+  🇪🇺 FTSE/CAC/DAX, 🌏 Nikkei/Hang-Seng (Yahoo, % vs prev close, 🟢/🔴 by
+  sign), 🎯 GIFT Nifty (TradingView `NSEIX:NIFTY1!`), 💼 prior-session
+  FII/DII cash flows (chirag127 static-JSON GitHub API; gitignore-clean, no
+  keys). Every block is best-effort — a dead feed omits its row, never the
+  message (see `nse_alerts/world.py`). The 08:45–08:55 external-cron
+  dispatches fall in the pre-open quiet window and stay silent.
+- **09:20 opening levels (v1)**: the 09:17–09:25 run sends the day's opening
+  snapshot once per day (`levels_date`) — 🇮🇳 NIFTY spot and 😨 India VIX
+  (Yahoo, level + day change by 🟢/🔴 sign), 🎯 GIFT Nifty overnight cue
+  (TradingView), then the ATM straddles for NIFTY (50-pt grid) and SENSEX
+  (100-pt grid): BS-indicative CE + PE premiums at the nearest strike with
+  total ₹ and % of spot (same T/IV pricing as the 09:45 alert, see
+  `nse_alerts/snapshot.py`). The header counts down the next expiry
+  (⏳ `exp Tue · 1.9 sess`, matching the Mon/Tue Wed/Thu Fri playbook
+  rotation) and a 🛡️ guard-rail line (`−₹7k WARN · −₹10k EXIT · flat ALL
+  by 15:15`) closes the message. Each block is best-effort; the 08:45
+  discipline card was **retired** (2026-10-21) — the 09:45 entry alert still
+  carries the full strangle execution rules every trading day.
 - **09:45 entry alert (every trading day)**: `strike_rule()` → closer 0.95%
   OTM CE+PE → indicative Black-Scholes premiums (India VIX, r=0) → credit
   floor (₹18 NIFTY / ₹40 SENSEX, else SKIP) → **2× per-leg stops** +
@@ -316,7 +329,7 @@ Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$false
 
 ```powershell
 cd d:\Cursor\python_for_java_devs\nse_alerter
-python -m pytest                # 175 tests, all offline (synthetic candles, mocked HTTP)
+python -m pytest                # 198 tests, all offline (synthetic candles, mocked HTTP)
 ```
 
 | Symptom | Fix |

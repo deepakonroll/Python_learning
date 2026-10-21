@@ -2,7 +2,8 @@
 
 The 2026-10-09 sweep measured ONLY the strangle (the envelope had flip
 counts but no rupee EV). This tool prices the pilot rules exactly as the
-08:45 card states them (app.py _plan_card v5):
+retired 08:45 discipline card stated them (card removed 2026-10-21; rules
+unchanged):
 
     BLUE cross (side -> UP)  -> sell ATM PE, 1 lot
     RED  cross (side -> DOWN) -> sell ATM CE, 1 lot

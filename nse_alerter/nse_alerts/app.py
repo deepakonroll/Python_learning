@@ -439,22 +439,33 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     today = now.date().isoformat()
     ok = failed = 0
 
-    # 08:45-09:10 window: one plan card per trading day (external cron ticks
-    # 45,50,55 8 + GitHub backup + the 09:00/09:05 main-cron ticks). The 09:10
-    # end is a CI-startup grace: a dispatch TRIGGERED at 08:59 only EXECUTES
-    # after ~09:00. Early return - sessions are shut, so the pre-open manual
-    # note stays quiet on card ticks.
-    if (not dry_run and time(8, 45) <= now.time() < time(9, 10)
+    # 09:02-09:10 window: the ~09:05 world-markets snapshot (global index
+    # closes vs prev day, GIFT Nifty, prior-session FII/DII) - once per trading
+    # day (world_date). Every source is best-effort, so the send can't be
+    # eaten by one dead feed. The 08:45-08:55 external-cron dispatches fall in
+    # the pre-open quiet window (see the manual-note gate) and do nothing.
+    if (not dry_run and time(9, 2) <= now.time() < time(9, 10)
             and is_trading_day(now.date(), cfg.holidays)
-            and store.get_control().get("card_date") != today):
-        if _plan_card(cfg, now):
-            store.set_control({**store.get_control(), "card_date": today})
+            and store.get_control().get("world_date") != today):
+        if _world_update(cfg, now):
+            store.set_control({**store.get_control(), "world_date": today})
+        return 0
+
+    # 09:17-09:25 window: the ~09:20 opening-levels snapshot - NIFTY/SENSEX
+    # spot + India VIX + ATM straddle premiums (BS-indicative) - once per
+    # trading day (levels_date). Best-effort like the world update: any
+    # missing row is omitted, never fatal.
+    if (not dry_run and time(9, 17) <= now.time() < time(9, 26)
+            and is_trading_day(now.date(), cfg.holidays)
+            and store.get_control().get("levels_date") != today):
+        if _levels_update(cfg, now):
+            store.set_control({**store.get_control(), "levels_date": today})
         return 0
 
     # 09:45 entry alert, every trading day (ENTRY_SESSIONS: NIFTY Mon/Tue/Fri,
     # SENSEX Wed/Thu): strike_rule() decision + premiums + 2x leg stops +
     # portfolio stop/target + 15:15 square-off, once per day. Entering the
-    # block consumes this tick (mirrors the plan card); a failed send leaves
+    # block consumes this tick (mirrors the levels snapshot); a failed send leaves
     # the key unset so the next 5-min tick retries until 10:15.
     instrument = (expiry.EXPIRY_ROTATION.get(now.weekday())
                   if is_trading_day(now.date(), cfg.holidays) else None)
@@ -517,7 +528,7 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         return 3
     if (ok == 0 and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
             and now.time() < session_bounds("MCX")[0]
-            and not (time(8, 45) <= now.time() < time(9, 10))):  # card window
+            and not (time(8, 45) <= now.time() < time(9, 10))):  # pre-open quiet window
         # Pre-open manual runs reply with proof of life. Post-close runs and the
         # external cron's own dispatches (also workflow_dispatch!) stay silent -
         # otherwise every dead-tail tick would spam a note.
@@ -563,57 +574,50 @@ def _prep_alert(cfg: Config, key: str, candles, forming, current_side: str,
     return True
 
 
-# static 09:45 rule line per weekday (VIX-ladder sweep, 2026-10-09): every
-# weekday is an entry day under expiry.EXPIRY_ROTATION.
-_ENTRY_LINE = {
-    0: "• 09:45 · NIFTY closer 0.95% (1.9 sess to Tue) · floor ₹18 · stop −0.5C",
-    1: "• 09:45 · NIFTY 0DTE · enter only if credit ≥ ₹18 · stop −1.0C · else SKIP",
-    2: "• 09:45 · SENSEX closer 0.95% (1.9 sess to Thu) · floor ₹40 · stop −0.5C",
-    3: "• 09:45 · SENSEX 0DTE · NO ENTRY (measured E<0) · envelope only",
-    4: "• 09:45 · NIFTY closer 0.95% (2.9 sess to Tue) · floor ₹18 · stop −0.5C",
-}
-
-
-def _plan_card(cfg: Config, now: datetime) -> bool:
-    """08:45 discipline card (v5) - static rules, no market data, so a flaky
-    feed can never eat it. Every weekday leads with the day's strangle plan
-    (Thu = NO ENTRY reminder); the envelope-pilot rules ride along because the
-    envelope runs daily. True = sent (the caller records card_date for the
-    once-per-day dedupe; failures retry on the next tick at 8:50, 8:55, 9:00,
-    9:05)."""
+def _world_update(cfg: Config, now: datetime) -> bool:
+    """09:05 morning snapshot: 7 index closes vs prev day + GIFT Nifty +
+    prior-session FII/DII flows (nse_alerts/world.py). Best-effort fetches -
+    a missing GIFT/FII-DII block is omitted, never fatal. True = sent (the
+    caller records world_date; a failed send retries on the next tick)."""
     if not (cfg.telegram_token and cfg.telegram_chat_id):
         return False
-    wd = now.weekday()
-    instrument = expiry.EXPIRY_ROTATION[wd]
-    spec = expiry.EXPIRY_SPECS[instrument]
-    title = ("NIFTY 0-DTE STRANGLE" if wd == 1
-             else "SENSEX STRANGLE · NO ENTRY" if wd == 3
-             else f"{instrument} intraday STRANGLE")
-    text = (
-        f"📋 PLAN · {now:%a %d %b} · {title}\n"
-        f"• 09:45 alert → rule CLOSER 0.95% CE + PE "
-        f"(step {spec['step']} · lot {spec['lot']})\n"
-        + _ENTRY_LINE[wd] + "\n"
-        "• Size 20 lots fixed (1,300 NIFTY / 400 SENSEX qty) · ONE entry · NO adds\n"
-        "• STOP 2× on EITHER leg → exit BOTH (orders at fill) · never remove\n"
-        "• Portfolio: stop −0.5C (−1.0C on NIFTY 0-DTE) · target = 15:15 decay\n"
-        "• Square off ALL by 15:15 · no re-entry · journal every trade\n"
-        "• Envelope ON daily (pilot): BLUE cross → sell ATM PE · "
-        "RED cross → sell ATM CE (1 lot)\n"
-        "• Entry ≤ 2 bars after the alert · ATM = nearest 50-pt strike\n"
-        "• Exit: REVERSE cross or flat ALL by 15:15 · backstop: premium "
-        "DOUBLES → exit (order at fill)\n"
-        "• Max 2 envelope trades/day · NIFTY + crude @17:00-22:00 · "
-        "charts on NIFTY ONLY\n"
-        "• Ladder: -7k = WARN · -10k = EXIT, session over\n"
-        "• Tripwires live: ⚔️ ±0.45% = context · 🔴 ±0.8% = trend day"
+    from nse_alerts import world
+    rows = world.fetch_yahoo_rows()
+    text = world.build_message(
+        rows,
+        gift=world.fetch_gift(),
+        fiidii=world.fetch_fii_dii(),
     )
+    if not text:
+        log.warning("world update: no Yahoo rows (%d) - skipping send", len(rows))
+        return False
     try:
         send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
     except NotifyError as exc:
-        log.error("plan card failed (%s) - next tick retries", exc)
+        log.error("world update failed (%s) - next tick retries", exc)
         return False
-    log.info("plan card sent (%s %s)", now.strftime("%a"), instrument)
+    log.info("world update sent (%s; %d indices)", now.strftime("%a"), len(rows))
+    return True
+
+
+def _levels_update(cfg: Config, now: datetime) -> bool:
+    """09:20 opening-levels snapshot: NIFTY/SENSEX spot + India VIX + ATM
+    straddle premiums (nse_alerts/snapshot.py). Best-effort - a missing row
+    is omitted, never fatal. True = sent (the caller records levels_date; a
+    failed send retries on the next tick)."""
+    if not (cfg.telegram_token and cfg.telegram_chat_id):
+        return False
+    from nse_alerts import snapshot
+    text = snapshot.build_message(snapshot.fetch_levels(), now)
+    if not text:
+        log.warning("levels update: no spot data - skipping send")
+        return False
+    try:
+        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+    except NotifyError as exc:
+        log.error("levels update failed (%s) - next tick retries", exc)
+        return False
+    log.info("levels update sent (%s)", now.strftime("%a"))
     return True
 
 
