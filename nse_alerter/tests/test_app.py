@@ -886,6 +886,31 @@ def test_trend_day_suppresses_fresh_nifty_entries(rig, monkeypatch):
 
 
 
+def test_0945_tick_runs_normal_scan_after_entry_alert_retired(rig, monkeypatch):
+    """The 🎯 09:45 EXPIRY ENTRY strangle alert is RETIRED (2026-10-22,
+    owner call): its Tuesday 09:45 slot must behave like any other scan tick,
+    and none of the retired card's vocabulary may ever come back. This locks
+    the removal that the '_tmp_0945.py' scratch verified by hand."""
+    from datetime import datetime
+
+    from nse_alerts.market_hours import IST
+
+    cfg, provider, sent = rig
+    # Tuesday 09:45 - the old expiry-entry slot (NIFTY 0.92 sessions left).
+    monkeypatch.setattr(app, "now_ist",
+                        lambda: datetime(2026, 9, 29, 9, 45, tzinfo=IST))
+    # A live fetch returns lookback_bars of history (incl. prior sessions),
+    # so the engine has enough completed bars even at 09:45 to warm up.
+    provider.df = make_candles([100.0 - 0.05 * i for i in range(40)],
+                               start="2026-09-25 09:15")
+
+    assert app.run(cfg) == 0
+
+    dead = {"EXPIRY ENTRY", "strangle", "square off", "0DTE"}
+    for _, _, text in sent.messages:
+        assert not any(m in text for m in dead), \
+            f"retired 09:45 card resurrected: {text!r}"
+
 # --- P0 fresh-crude feed + P1 env prep alerts --------------------------------
 
 def test_crude_auto_chain_leads_with_fresh_tv_override(rig):

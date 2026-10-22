@@ -50,7 +50,7 @@ nse_alerter/
 │   ├── notify.py         # Telegram sender
 │   ├── config.py         # env-driven config
 │   └── providers/        # tv (TradingView futures) → yahoo (spot proxy) → kite (later)
-└── tests/                # 128 offline tests: `python -m pytest`
+└── tests/                # 198 offline tests: `python -m pytest`
 ```
 
 ## 1. Install
