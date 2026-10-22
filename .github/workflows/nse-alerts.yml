@@ -1,15 +1,18 @@
 # Runs the SAME nse_alerter app on GitHub's servers - your PC can stay off.
 # Cron is UTC; IST has no DST -> sessions: MCX 09:00-23:35, NSE 09:15-15:35 IST.
 # Simple syntax only (minute lists + one */5 hour range), Mon-Fri:
-#   09:00-09:25, 09:30-23:25, 23:30-23:35 IST every 5 min = ~176 runs/day
+#   09:02-09:27, 09:32-23:27, 23:32-23:37 IST every 5 min = ~176 runs/day
 # (free minutes: make the repo PUBLIC for unlimited Actions minutes)
+# Runs land ~2 min into each FORMING 5m bar (not on the :00/:05 boundaries),
+# so the forming-bar "flip PENDING" heads-up (PREP_ALERTS) fires BEFORE the
+# confirmed full-bar alert - you hear about a cross while the bar is forming.
 name: nse-alerts
 
 on:
   schedule:
-    - cron: '30,35,40,45,50,55 3 * * 1-5'   # 09:00-09:25 IST (MCX open)
-    - cron: '*/5 4-17 * * 1-5'              # 09:30-23:25 IST (NSE + MCX)
-    - cron: '0,5 18 * * 1-5'                # 23:30-23:35 IST (MCX close grace)
+    - cron: '32,37,42,47,52,57 3 * * 1-5'   # 09:02-09:27 IST (MCX open)
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 4-17 * * 1-5'  # 09:32-23:27
+    - cron: '2,7 18 * * 1-5'                # 23:32-23:37 IST (MCX close grace)
     - cron: '15,20,25 3 * * 1-5'            # 08:45-08:55 IST pre-open quiet ticks
   workflow_dispatch:            # manual "Run workflow" button for testing
 

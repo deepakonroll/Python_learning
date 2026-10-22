@@ -20,7 +20,7 @@ Java equivalent: a small state machine fed one event at a time.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -47,18 +47,74 @@ class CrossEvent:
     strategy: str = "ema20"
     rule: str = ""       # human-readable condition line
 
-    def message(self) -> str:
+    def message(self, now: datetime | None = None,
+                interval_minutes: int = 5) -> str:
         arrow = "UP->DOWN" if self.side == "SELL" else "DOWN->UP"
         label = STRATEGY_LABELS.get(self.strategy, self.strategy)
         rule = self.rule or (
             f"5m close {self.close:,.2f} "
             f"{'>' if self.side == 'BUY' else '<'} EMA20 {self.ema:,.2f}")
+        footer = f"bar {self.bar_time:%d %b %H:%M} IST - src={self.source}"
+        if now is not None:
+            naive = now.replace(tzinfo=None) if now.tzinfo else now
+            close_t = self.bar_time + timedelta(minutes=interval_minutes)
+            lag = max(0, int((naive - close_t).total_seconds()
+                             // (interval_minutes * 60)))
+            footer += (f"\n⏱️ bar closed {close_t:%H:%M} · "
+                       f"{'just closed' if lag == 0 else f'{lag} bar(s) late'}"
+                       f" · sent {naive:%H:%M}")
         return (
             f"{'SELL' if self.side == 'SELL' else 'BUY'} {self.symbol} "
             f"({arrow}) · {label}\n"
             f"{rule}\n"
-            f"bar {self.bar_time:%d %b %H:%M} IST - src={self.source}"
+            f"{footer}"
         )
+
+
+def prep_flip(candles: pd.DataFrame, live_close: float, side: str,
+              strategy: str, *, ema_len: int = 20, rsi_period: int = 14,
+              sf: int = 5, factor: float = 4.238) -> tuple[str, str] | None:
+    """Forming-bar heads-up for the non-envelope engines.
+
+    ('UP' | 'DOWN', detail) when the LIVE bar would flip `side` if it closed
+    right now - the preview BEFORE the confirmed full-bar break. `both`
+    requires the two engines to predict the SAME new direction. None when
+    nothing is pending (or the engines disagree).
+    """
+    closes = candles["Close"].astype(float).reset_index(drop=True)
+    if strategy == "ema20":
+        level = float(ema(closes, ema_len).iloc[-1])
+        if side == "DOWN" and live_close > level:
+            return "UP", f"live {live_close:,.2f} > EMA{ema_len} {level:,.2f}"
+        if side == "UP" and live_close < level:
+            return "DOWN", f"live {live_close:,.2f} < EMA{ema_len} {level:,.2f}"
+        return None
+    if strategy == "qqe":
+        hyp = pd.concat([closes, pd.Series([float(live_close)])],
+                        ignore_index=True)
+        want = qqe_side(hyp, rsi_period, sf, factor)
+        if want.isna().all():
+            return None
+        new = "UP" if int(want.iloc[-1]) == 1 else "DOWN"
+        if new == side:
+            return None
+        lines = qqe_lines(hyp, rsi_period, sf, factor)
+        trail = float(lines["FastAtrRsiTL"].iloc[-1])
+        rsi = float(lines["RSIndex"].iloc[-1])
+        op = "<" if new == "UP" else ">"
+        return new, (f"QQE trailing {trail:.1f} {op} RSI-ma {rsi:.1f} "
+                     f"(live {live_close:,.2f})")
+    if strategy == "both":
+        em = prep_flip(candles, live_close, side, "ema20",
+                       ema_len=ema_len)
+        if em is None:
+            return None
+        qq = prep_flip(candles, live_close, side, "qqe",
+                       rsi_period=rsi_period, sf=sf, factor=factor)
+        if qq is None or qq[0] != em[0]:
+            return None
+        return em[0], f"{em[1]} | {qq[1]}"
+    return None
 
 
 def prep_message(symbol: str, direction: str, live: float, level: float,
@@ -75,6 +131,22 @@ def prep_message(symbol: str, direction: str, live: float, level: float,
         f"{color} flip PENDING · side {current_side} · "
         f"bar {bar_start:%d %b %H:%M} IST (forming)\n"
         f"confirms only if the bar CLOSES fully {op} the band · src={source}"
+    )
+
+
+def prep_flip_message(symbol: str, direction: str, live: float, detail: str,
+                      bar_start: datetime, source: str,
+                      current_side: str, strategy: str) -> str:
+    """⚠️ forming-bar heads-up for ema20 / qqe / both - same contract as the
+    envelope prep: state never moves, only a completed full-bar break in
+    evaluate() confirms the flip. `detail` is the rule text from prep_flip()."""
+    label = STRATEGY_LABELS.get(strategy, strategy)
+    arrow = "UP (bullish)" if direction == "UP" else "DOWN (bearish)"
+    return (
+        f"⚠️ {label} flip PENDING · {symbol} live {live:,.2f} → {arrow}\n"
+        f"{detail}\n"
+        f"side {current_side} · bar {bar_start:%d %b %H:%M} IST (forming) · "
+        f"confirms only if the bar CLOSES · src={source}"
     )
 
 

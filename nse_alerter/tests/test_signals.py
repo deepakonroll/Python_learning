@@ -1,12 +1,17 @@
 """The core rule: 5m close vs EMA20, alert only on a side flip."""
 
+from datetime import datetime, timedelta
+
 import pandas as pd
 import pytest
 
 from nse_alerts.signals import (
+    CrossEvent,
     SignalError,
     ema,
     evaluate,
+    prep_flip,
+    prep_flip_message,
     side_series,
 )
 from tests.conftest import falling, make_candles, rising
@@ -85,3 +90,64 @@ def test_insufficient_data_raises():
     with pytest.raises(SignalError):
         evaluate(make_candles([100.0, 101.0]), symbol="X", ema_len=20,
                  prev_side=None, source="fake")
+
+
+def test_prep_flip_ema20_pending_up_when_live_crosses():
+    """A live bar already above the completed-bar EMA20 warns a BUY is
+    pending (even though the full bar hasn't closed yet)."""
+    candles = make_candles([100.0] * 40 + [99.5] * 20)   # completed side DOWN
+    level = f"{ema(candles['Close'], 20).iloc[-1]:,.2f}"
+    assert prep_flip(candles, 100.4, "DOWN", "ema20", ema_len=20) \
+        == ("UP", f"live 100.40 > EMA20 {level}")
+    # same live price but still on the current side -> not a flip
+    assert prep_flip(candles, 100.4, "UP", "ema20", ema_len=20) is None
+    # live still below the EMA -> nothing pending
+    assert prep_flip(candles, 99.2, "DOWN", "ema20", ema_len=20) is None
+
+
+def test_prep_flip_both_requires_engines_to_agree():
+    # series ends side DOWN (close 99.9 < EMA20 99.91), QQE also DOWN
+    candles = make_candles([100.0] * 40 + [99.9] * 20)
+    # a live close back above the EMA flips BOTH engines UP -> preview fires
+    got = prep_flip(candles, 100.2, "DOWN", "both", ema_len=20,
+                    rsi_period=14, sf=5, factor=4.238)
+    assert got is not None and got[0] == "UP"
+    assert "live 100.20 > EMA20" in got[1] and "QQE trailing" in got[1]
+    # live still below the EMA -> EMA engine has nothing pending, so the
+    # consensus preview must NOT fire (both engines must agree)
+    assert prep_flip(candles, 99.5, "DOWN", "both", ema_len=20,
+                     rsi_period=14, sf=5, factor=4.238) is None
+
+
+def test_prep_flip_message_mentions_pending_and_confirmation_rule():
+    from nse_alerts.signals import prep_flip_message
+    bar = datetime(2026, 9, 28, 11, 30)
+    text = prep_flip_message("NIFTY1!", "UP", 23000.0,
+                             "live 23000.00 > EMA20 22990.00",
+                             bar, "tv", "DOWN", "ema20")
+    assert text.startswith("⚠️ EMA20 cross flip PENDING")
+    assert "23000.00" in text and "confirms only if the bar CLOSES" in text
+    assert "11:30 IST (forming)" in text
+
+
+def test_message_stamps_bar_age_when_late():
+    bar = datetime(2026, 9, 28, 10, 5)                   # 10:05 -> 10:10 close
+    ev = CrossEvent(symbol="NIFTY1!", side="SELL", prev_side="UP",
+                    bar_time=bar, close=22992.6, ema=23004.39,
+                    source="tv", strategy="ema20")
+    now = bar + timedelta(minutes=20)                      # sent 10:25
+    text = ev.message(now=now, interval_minutes=5)
+    assert "bar 28 Sep 10:05 IST - src=tv" in text
+    assert "bar closed 10:10" in text and "sent 10:25" in text
+    assert "3 bar(s) late" in text                          # 10:25 - 10:10 = 3
+    # without `now` the footer stays the old terse form (replay/dry-run)
+    assert "sent" not in ev.message()
+
+
+def test_message_same_bar_no_lag():
+    bar = datetime(2026, 9, 28, 10, 5)
+    ev = CrossEvent(symbol="NIFTY1!", side="SELL", prev_side="UP",
+                    bar_time=bar, close=22992.6, ema=23004.39,
+                    source="tv", strategy="ema20")
+    text = ev.message(now=bar + timedelta(minutes=5), interval_minutes=5)
+    assert "just closed" in text and "bar(s) late" not in text

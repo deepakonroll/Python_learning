@@ -91,13 +91,14 @@ def test_heartbeat_fires_only_once_per_trading_day(rig, monkeypatch):
 
 def test_cross_sends_exactly_once_then_dedupes(rig):
     cfg, provider, sent = rig
+    provider.df = make_candles([100.0] * 10 + [99.5] * 30)  # <0.8%: calm
     assert app.run(cfg) == 0                             # baseline: DOWN + heartbeat
     plain = [m for m in sent.messages
              if not m[2].startswith(("⚔️", "🔴"))]         # tripwires filtered
     assert len(plain) == 1
     assert "monitoring live" in plain[0][2]
 
-    provider.df = make_candles(falling(26) + rising(26))  # side flips to UP
+    provider.df = make_candles([100.0] * 10 + [99.5] * 30 + [100.7] * 12)  # UP
     assert app.run(cfg) == 0
     plain = [m for m in sent.messages if not m[2].startswith(("⚔️", "🔴"))]
     assert len(plain) == 2                            # heartbeat + BUY
@@ -807,141 +808,10 @@ def test_trend_tripwires_zone_then_trend_fire_once(monkeypatch, tmp_path):
     assert "NO re-entry" in trend[0]
 
 
-def test_expiry_entry_alert_tuesday_0945_fires_once(rig, monkeypatch):
-    """Tue 09:45 -> the NIFTY strangle entry alert exactly once; the next
-    tick falls through to the normal scan (no second alert)."""
-    from datetime import datetime
-
-    from nse_alerts import control, expiry
-    from nse_alerts.market_hours import IST
-
-    cfg, provider, sent = rig
-    monkeypatch.setattr(control, "fetch_updates", lambda token: [])
-    monkeypatch.setattr(expiry, "fetch_india_vix",
-                        lambda *a, **k: (0.14, "test"))
-    # Oct 5 (Mon) bars for warm-up + Oct 6 morning bars for the live spot
-    closes = [22445.0] * 288 + [22445.5] * 12
-    provider.df = make_candles(closes, start="2026-10-05 09:15")
-    monkeypatch.setattr(app, "now_ist",
-                        lambda: datetime(2026, 10, 6, 9, 45, tzinfo=IST))  # Tue
-
-    assert app.run(cfg) == 0
-    alerts = [t for _, _, t in sent.messages if t.startswith("🎯")]
-    assert len(alerts) == 1
-    text = alerts[0]
-    assert "NIFTY 0DTE strangle" in text
-    assert "SELL 22,650 CE" in text and "SELL 22,250 PE" in text  # closer 0.95%
-    assert "20 lots (1,300 qty)" in text
-    assert "2×" in text and "15:15" in text and "EITHER leg" in text
-    assert "ONE entry" in text and "NO adds" in text
-    ctrl = StateStore(cfg.state_file).get_control()
-    assert ctrl.get("expiry_alert_date") == "2026-10-06"
-
-    assert app.run(cfg) == 0                         # next tick, same day
-    assert len([t for _, _, t in sent.messages
-                if t.startswith("🎯")]) == 1         # deduped
-
-
-def test_expiry_entry_alert_retries_after_provider_failure(rig, monkeypatch):
-    """A dead feed never consumes the once-per-day key: 09:45 fails quietly,
-    09:50 succeeds."""
-    from datetime import datetime
-
-    from nse_alerts import control, expiry
-    from nse_alerts.market_hours import IST
-
-    cfg, provider, sent = rig
-    monkeypatch.setattr(control, "fetch_updates", lambda token: [])
-    monkeypatch.setattr(expiry, "fetch_india_vix",
-                        lambda *a, **k: (0.14, "test"))
-    provider.error = "feed down"
-    monkeypatch.setattr(app, "now_ist",
-                        lambda: datetime(2026, 10, 6, 9, 45, tzinfo=IST))
-    assert app.run(cfg) == 0                          # failure swallowed
-    assert not [t for _, _, t in sent.messages if t.startswith("🎯")]
-    assert StateStore(cfg.state_file).get_control().get(
-        "expiry_alert_date") is None                  # key NOT consumed
-
-    provider.error = None
-    provider.df = make_candles([22445.5] * 12, start="2026-10-06 09:15")
-    monkeypatch.setattr(app, "now_ist",
-                        lambda: datetime(2026, 10, 6, 9, 50, tzinfo=IST))
-    assert app.run(cfg) == 0
-    alerts = [t for _, _, t in sent.messages if t.startswith("🎯")]
-    assert len(alerts) == 1 and "NIFTY 0DTE" in alerts[0]
-    assert StateStore(cfg.state_file).get_control().get(
-        "expiry_alert_date") == "2026-10-06"
-
-
-def test_expiry_entry_alert_thursday_uses_sensex_grid(rig, monkeypatch):
-    """Thu 09:45 -> SENSEX NO-ENTRY alert (0-DTE E<0) on the 100-pt grid."""
-    from datetime import datetime
-
-    from nse_alerts import control, expiry
-    from nse_alerts.market_hours import IST
-
-    cfg, provider, sent = rig
-    monkeypatch.setattr(control, "fetch_updates", lambda token: [])
-    monkeypatch.setattr(expiry, "fetch_india_vix",
-                        lambda *a, **k: (0.14, "test"))
-    provider.df = make_candles([71905.0] * 12, start="2026-10-08 09:15")
-    monkeypatch.setattr(app, "now_ist",
-                        lambda: datetime(2026, 10, 8, 9, 45, tzinfo=IST))  # Thu
-
-    assert app.run(cfg) == 0
-    alerts = [t for _, _, t in sent.messages if t.startswith("🎯")]
-    assert len(alerts) == 1
-    text = alerts[0]
-    assert "SENSEX 0DTE strangle" in text
-    assert "NO ENTRY" in text                          # Thu 0-DTE = E<0, measured
-    assert "72,600 CE" in text and "71,200 PE" in text  # 0.95% on step 100
-    assert "15:15" in text
-
-
-def test_expiry_entry_alert_fires_friday_monday_wednesday(rig, monkeypatch):
-    """2026-10-09 rotation: the entry alert fires EVERY weekday - Fri 2.9-sess
-    NIFTY, Mon 1.9-sess NIFTY, Wed 1.9-sess SENSEX - closer rule each time."""
-    from datetime import datetime
-
-    from nse_alerts import control, expiry
-    from nse_alerts.market_hours import IST
-
-    cfg, provider, sent = rig
-    monkeypatch.setattr(control, "fetch_updates", lambda token: [])
-    monkeypatch.setattr(expiry, "fetch_india_vix",
-                        lambda *a, **k: (0.14, "test"))
-
-    # Friday: NIFTY, 2.9 sessions to Tuesday expiry
-    provider.df = make_candles([22445.0] * 12, start="2026-10-09 09:15")
-    monkeypatch.setattr(app, "now_ist",
-                        lambda: datetime(2026, 10, 9, 9, 45, tzinfo=IST))
-    assert app.run(cfg) == 0
-    alerts = [t for _, _, t in sent.messages if t.startswith("🎯")]
-    assert len(alerts) == 1
-    assert "NIFTY strangle · exp Tue" in alerts[0]
-    assert "2.9 sess" in alerts[0] and "rule CLOSER 0.95%" in alerts[0]
-
-    # Monday re-arms the key: same instrument, 1.9 sessions
-    provider.df = make_candles([22445.0] * 12, start="2026-10-12 09:15")
-    monkeypatch.setattr(app, "now_ist",
-                        lambda: datetime(2026, 10, 12, 9, 45, tzinfo=IST))
-    assert app.run(cfg) == 0
-    alerts = [t for _, _, t in sent.messages if t.startswith("🎯")]
-    assert len(alerts) == 2 and "1.9 sess" in alerts[-1]
-
-    # Wednesday: SENSEX takes over (rotated instrument + Thursday expiry tag)
-    provider.df = make_candles([71905.0] * 12, start="2026-10-14 09:15")
-    monkeypatch.setattr(app, "now_ist",
-                        lambda: datetime(2026, 10, 14, 9, 45, tzinfo=IST))
-    assert app.run(cfg) == 0
-    alerts = [t for _, _, t in sent.messages if t.startswith("🎯")]
-    assert len(alerts) == 3
-    assert "SENSEX strangle · exp Thu" in alerts[-1]
-
-
-def test_envelope_alerts_fire_on_strangle_days_too(rig, monkeypatch):
-    """No pause: entry days ADD the 09:45 strangle alert but the envelope
-    keeps evaluating and alerting every day of the rotation."""
+def test_envelope_alerts_fire_every_day_on_calm_days(rig, monkeypatch):
+    """The envelope keeps evaluating and alerting daily. Calm days (<0.45%
+    from open) cross normally; a TREND DAY suppresses fresh entries instead
+    (the 09:45 strangle alert is retired)."""
     from dataclasses import replace
     from datetime import datetime
 
@@ -956,24 +826,27 @@ def test_envelope_alerts_fire_on_strangle_days_too(rig, monkeypatch):
         return [t for _, _, t in sent.messages
                 if t.startswith(("BUY ", "SELL "))]
 
-    # Monday 13:30: baseline, no alert
-    provider.df = make_candles(falling(60))
+    # Monday 13:30: baseline, no alert (day stays inside the ±0.45% zone)
+    provider.df = make_candles([100.0] * 40 + [99.4] * 20)
     assert app.run(cfg) == 0
     assert not envelope_alerts()
     assert StateStore(cfg.state_file).get("NIFTY1!#env").last_side == "DOWN"
 
-    # Tuesday 11:30 (strangle day): the cross STILL alerts - no pause
-    provider.df = make_candles(rising(60), start="2026-09-29 09:15")
+    # Tuesday 11:30 (calm day): the DOWN -> UP cross STILL alerts.
+    # 8 bars flat then the level step - so the completed bars at 11:30
+    # (~27) already contain the break, while keeping the day within ±0.6%.
+    provider.df = make_candles([100.0] * 8 + [100.6] * 52,
+                               start="2026-09-29 09:15")
     monkeypatch.setattr(app, "now_ist",
                         lambda: datetime(2026, 9, 29, 11, 30, tzinfo=IST))
     assert app.run(cfg) == 0
     assert [t for t in envelope_alerts()
             if t.startswith("BUY NIFTY1!")]          # DOWN -> UP fired on Tue
     assert StateStore(cfg.state_file).get("NIFTY1!#env").last_side == "UP"
-    assert [t for _, _, t in sent.messages if t.startswith("⚔️")]  # tripwires
 
-    # Wednesday 11:30: pilot day unchanged
-    provider.df = make_candles(falling(60), start="2026-09-30 09:15")
+    # Wednesday 11:30 (calm day): UP -> DOWN alerts too
+    provider.df = make_candles([100.6] * 8 + [100.0] * 52,
+                               start="2026-09-30 09:15")
     monkeypatch.setattr(app, "now_ist",
                         lambda: datetime(2026, 9, 30, 11, 30, tzinfo=IST))
     assert app.run(cfg) == 0
@@ -981,12 +854,44 @@ def test_envelope_alerts_fire_on_strangle_days_too(rig, monkeypatch):
             if t.startswith("SELL NIFTY1!")]         # UP -> DOWN fired
 
 
+def test_trend_day_suppresses_fresh_nifty_entries(rig, monkeypatch):
+    """🔴 TREND DAY (>= 0.8% from open) = flatten path, NO re-entry today:
+    a fresh BUY/SELL flip is consumed silently - state advances, no entry
+    alert is sent."""
+    from nse_alerts.market_hours import IST
+    from nse_alerts.state import StateStore as _S
+
+    cfg, provider, sent = rig
+    store = _S(cfg.state_file)
+
+    # Baseline DOWN on a calm day (no trend lock).
+    provider.df = make_candles([100.0] * 40 + [99.6] * 20)
+    assert app.run(cfg) == 0
+    assert not [t for _, _, t in sent.messages
+                if t.startswith(("BUY NIFTY1!", "SELL NIFTY1!"))]
+
+    # Declare today a trend day (what the 🔴 tripwire would have done).
+    store.set_control({"enabled": True, "trend_date": "2026-09-28",
+                       "trend_sent": True})
+
+    # A rising path that would flip EMA20 DOWN -> UP (fresh BUY entry).
+    provider.df = make_candles([100.0] * 40 + [100.7] * 20)
+    assert app.run(cfg) == 0
+    flips = [t for _, _, t in sent.messages
+             if t.startswith(("BUY NIFTY1!", "SELL NIFTY1!"))]
+    assert flips == []                                # entry suppressed
+    state = store.get(cfg.symbol)
+    assert state.last_side == "UP"                    # state still advanced
+    assert state.last_event_side == "BUY"             # flip recorded silently
+
+
 
 # --- P0 fresh-crude feed + P1 env prep alerts --------------------------------
 
 def test_crude_auto_chain_leads_with_fresh_tv_override(rig):
-    """TVC:UKOIL (real-time) leads for crude; delayed BZ=F is only the
-    fallback; other MCX symbols (NG) keep the old yahoo-first order."""
+    """NYMEX:BZ1! (continuous Brent futures - real-time) leads for crude;
+    delayed BZ=F is only the fallback; other MCX symbols (NG) keep the old
+    yahoo-first order."""
     from nse_alerts.config import parse_watches
 
     cfg, _, _ = rig
@@ -1021,7 +926,7 @@ def test_kite_provider_leads_with_free_chain_behind(rig):
 def test_stale_kite_token_falls_back_to_free_provider(rig):
     """A dead kite (expired token, credits gone...) must keep alerts alive on
     the next provider; kite reads the RAW watch symbol - the TV override
-    (TVC:UKOIL) is TV-only."""
+    (NYMEX:BZ1!) is TV-only."""
     from nse_alerts.config import parse_watches
 
     cfg, _, _ = rig
@@ -1044,7 +949,7 @@ def test_stale_kite_token_falls_back_to_free_provider(rig):
 
     candles, src = app.fetch_candles(cfg, [DeadKite(), Recorder()], MONDAY,
                                      crude, min_bars=1)
-    assert seen == ["MCX:CRUDEOIL", "TVC:UKOIL"]    # kite raw, tv override
+    assert seen == ["MCX:CRUDEOIL", "NYMEX:BZ1!"]   # kite raw, tv override
     assert src == "tv" and not candles.empty
 
     seen: list[str] = []
@@ -1058,7 +963,7 @@ def test_stale_kite_token_falls_back_to_free_provider(rig):
 
     candles, src = app.fetch_candles(cfg, [RecorderProvider()], MONDAY, crude,
                                      min_bars=1)
-    assert seen == ["TVC:UKOIL"]                 # crude fetches the fresh name
+    assert seen == ["NYMEX:BZ1!"]                 # crude fetches the fresh name
     assert src == "tv" and not candles.empty
 
 
@@ -1145,6 +1050,44 @@ def test_prep_send_failure_retries_next_tick(rig, monkeypatch):
     monkeypatch.setattr(app, "send_telegram", record)
     assert app.run(cfg) == 0
     assert any("pre-flip" in t for _, _, t in record.messages)   # retried
+
+
+def test_ema20_prep_fires_via_run_and_rearms(rig):
+    """The forming-bar heads-up is not envelope-only: EMA20 also warns while
+    the live bar is crossing (side DOWN + live penny above EMA20 -> pending
+    UP), then re-arms when the live price pulls back."""
+    from dataclasses import replace
+
+    cfg, provider, sent = rig
+    cfg = replace(cfg, strategy="ema20")
+    # completed bars fall (side DOWN), live bar at 13:30 pierces above EMA20
+    provider.df = _prep_frame(completed_close=None, live=110.0)
+    assert app.run(cfg) == 0
+    texts = [t for _, _, t in sent.messages
+             if not t.startswith(("⚔️", "🔴"))]
+    preps = [t for t in texts if t.startswith("⚠️")]
+    assert len(preps) == 1                              # heads-up + heartbeat
+    assert "EMA20 cross flip PENDING" in preps[0]
+    assert "live 110.00" in preps[0] and "confirms only if the bar CLOSES" in preps[0]
+    state = StateStore(cfg.state_file).get(cfg.symbol)
+    assert state.prep_fired is True
+    assert state.last_side == "DOWN"                    # prep NEVER moves state
+
+    assert app.run(cfg) == 0                            # same episode: no repeat
+    assert len([t for _, _, t in sent.messages
+                if t.startswith("⚠️")]) == 1
+
+    provider.df = _prep_frame(completed_close=None, live=85.0)  # below EMA20
+    assert app.run(cfg) == 0
+    assert len([t for _, _, t in sent.messages
+                if t.startswith("⚠️")]) == 1            # no send: re-armed only
+    assert StateStore(cfg.state_file).get(cfg.symbol).prep_fired is False
+
+    provider.df = _prep_frame(completed_close=None, live=110.0)  # re-approach
+    assert app.run(cfg) == 0
+    assert len([t for _, _, t in sent.messages
+                if t.startswith("⚠️")]) == 2            # armed again -> warns
+    assert StateStore(cfg.state_file).get(cfg.symbol).prep_fired is True
 
 
 def test_split_forming_separates_live_row():

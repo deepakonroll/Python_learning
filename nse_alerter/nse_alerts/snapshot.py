@@ -2,9 +2,9 @@
 
 Sent once per trading day ~20 min after the NSE open (09:15) so the owner sees
 actual opening levels and what the ATM straddles are worth while the session is
-still young. Premiums reuse the 09:45 playbook's pricing (expiry.py): r = 0,
-India VIX, session-time T (whole 09:15-15:30 sessions to that contract's
-expiry, extended across non-entry days).
+still young. Premiums reuse the expiry.py pricing kernels (r = 0, India VIX,
+session-time T - whole 09:15-15:30 sessions to that contract's expiry, extended
+across non-entry days).
 
 Best-effort, like world.py: any missing row (spot, VIX, GIFT) omits its block,
 never the whole message. build_message() is pure (offline-testable) and

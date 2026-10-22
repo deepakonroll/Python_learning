@@ -66,14 +66,15 @@ DEFAULT_WATCHES: dict[str, tuple[str, str | None]] = {
 }
 
 # Watch key -> TradingView symbol, for instruments TV serves under a different
-# name than the broker's. Anonymous TV blocks MCX symbols, but TVC:UKOIL (Brent
-# CFD) streams real-time to anonymous sessions; the yahoo BZ=F futures proxy
-# measured +10 min stale on 2026-10-06 (bar 20:55 shown at 21:09 IST), so
+# name than the broker's. Anonymous TV blocks MCX symbols, but NYMEX:BZ1! (the
+# Brent Last Day Financial Futures continuous - the same BZ1! chart you check)
+# streams to anonymous sessions; yahoo BZ=F stays as the fallback.
+# Measured 2026-10-06: yahoo BZ=F trails (bar 20:55 shown at 21:09 IST), so
 # crude LEADS with TV and keeps yahoo BZ=F only as the fallback
 # (applied in app.fetch_candles / build_providers, not in parse_watches).
 TV_SYMBOL_OVERRIDES: dict[str, str] = {
-    "MCX:CRUDEOIL": "TVC:UKOIL",
-    "MCX:CRUDEOILM": "TVC:UKOIL",
+    "MCX:CRUDEOIL": "NYMEX:BZ1!",
+    "MCX:CRUDEOILM": "NYMEX:BZ1!",
 }
 
 SYMBOLS_DEFAULT = "NIFTY1!~both,MCX:CRUDEOIL~both@17:00-22:00"

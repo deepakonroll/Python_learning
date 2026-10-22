@@ -148,9 +148,10 @@ def test_per_watch_session_window_parsing():
 def test_crude_tv_override_map_and_prep_flag(monkeypatch):
     from nse_alerts.config import TV_SYMBOL_OVERRIDES
 
-    # P0: crude fetches the real-time TV symbol (applied at fetch time, so
+    # P0: crude fetches the continuous Brent futures (NYMEX:BZ1! - the same
+    # series as the BZ1! TradingView chart), applied at fetch time, so
     # parse_watches keeps tv_symbol clean for every other symbol)
-    assert TV_SYMBOL_OVERRIDES["MCX:CRUDEOIL"] == "TVC:UKOIL"
+    assert TV_SYMBOL_OVERRIDES["MCX:CRUDEOIL"] == "NYMEX:BZ1!"
     # P1: prep heads-up defaults on; PREP_ALERTS=false switches it off
     assert _load(monkeypatch).prep_alerts is True
     assert _load(monkeypatch, PREP_ALERTS="false").prep_alerts is False

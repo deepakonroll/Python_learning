@@ -21,7 +21,7 @@ Premiums: Black-Scholes r=0 via ``nse_alerts.expiry.bs_price`` with the
 production session-time convention (T = sessions/252):
   NIFTY  - sessions to the next Tuesday expiry (0-DTE when entered Tue),
            IV = previous close of ^INDIAVIX (the live feed), qty 65
-  CRUDE  - BZ=F proxy (live chain: TVC:UKOIL > BZ=F), T = 5 sessions
+  CRUDE  - BZ=F proxy (live chain: NYMEX:BZ1! > BZ=F), T = 5 sessions
            (monthly option, ~1 week - theta is a second-order term),
            IV ladder 25/30/35, qty 100, gated 17:00-22:00 IST
 

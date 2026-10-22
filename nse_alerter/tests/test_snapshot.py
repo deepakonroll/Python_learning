@@ -99,8 +99,8 @@ def test_message_none_when_no_indian_index_at_all():
 
 
 def test_sessions_left_consistent_with_entry_playbook():
-    """Entry-day rows must match expiry.ENTRY_SESSIONS exactly (the 09:45
-    alert and the 09:20 straddle must agree on T for the same day)."""
+    """SESSIONS_LEFT rows must match expiry.ENTRY_SESSIONS exactly (the 09:20
+    straddle countdown and the expiry rotation must agree on T)."""
     for wd, (inst, sess) in ENTRY_SESSIONS.items():
         assert snapshot.SESSIONS_LEFT[inst][wd] == pytest.approx(sess)
 
@@ -177,7 +177,3 @@ def test_levels_nothing_sent_when_spots_dead_then_recovered(rig, monkeypatch):
     monkeypatch.setattr(snapshot, "fetch_levels", levels_full)   # feed recovers
     assert app.run(cfg) == 0
     assert "OPENING LEVELS" in sent.messages[-1][2]
-    """Entry-day rows must match expiry.ENTRY_SESSIONS exactly (the 09:45
-    alert and the 09:20 straddle must agree on T for the same day)."""
-    for wd, (inst, sess) in ENTRY_SESSIONS.items():
-        assert snapshot.SESSIONS_LEFT[inst][wd] == pytest.approx(sess)

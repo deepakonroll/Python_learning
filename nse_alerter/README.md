@@ -6,20 +6,16 @@
 with the env flip/prep **OFF** since 2026-10-17, gated 17:00–22:05 IST.
 NG off — add `MCX:NATURALGAS` back any time to re-enable it):**
 
-**Weekly rotation:** every weekday is an intraday-strangle entry
-day — NIFTY Fri/Mon/Tue (expires Tue), SENSEX Wed/Thu (expires Thu): closer
-0.95% OTM strikes, credit floor ₹18/₹40, 20 lots fixed, whole-position stop
-−0.5C (−1.0C on NIFTY 0-DTE), target = session decay to 15:15. Thu = SENSEX
-**NO ENTRY** (measured E<0 at every VIX). The envelope pilot runs **every
-day** (NIFTY + crude — charts checked on NIFTY only) and a **09:45 alert**
-fires each trading day with the day's decision. SENSEX feed: TradingView
-`BSE:SENSEX` → Yahoo `^BSESN`, both verified against the press close (see
-`nse_alerts/expiry.py`).
+**Weekly rotation (retired 2026-10-22):** the 09:45 intraday-strangle entry
+alert is **off** — the premium/expiry machinery still lives in
+`nse_alerts/expiry.py` only for the 09:20 snapshot's countdown header and the
+research tools. SENSEX feed: TradingView `BSE:SENSEX` → Yahoo `^BSESN`, both
+verified against the press close (see `nse_alerts/expiry.py`).
 
 | Watch | Exchange | Session (IST, Mon–Fri) | Data source |
 |---|---|---|---|
 | `NIFTY1!` — NIFTY futures | NSE | 09:15–15:35 | TradingView → `^NSEI` yahoo proxy |
-| `MCX:CRUDEOIL` — crude oil futures | MCX | 09:00–23:35, **alerts gated 17:00–22:05** (`@17:00-22:00`) | TradingView `TVC:UKOIL` (real-time Brent CFD, anonymous OK) → yahoo `BZ=F` fallback (**+10 min stale**, measured 2026-10-06) — MCX symbols are blocked for anonymous TV |
+| `MCX:CRUDEOIL` — crude oil futures | MCX | 09:00–23:35, **alerts gated 17:00–22:05** (`@17:00-22:00`) | TradingView `NYMEX:BZ1!` (continuous **Brent futures** — the same `BZ1!` chart on TradingView; real-time, anonymous OK) → yahoo `BZ=F` fallback (**+10 min stale**, measured 2026-10-06) — MCX symbols are blocked for anonymous TV |
 | `MCX:NATURALGAS` — natural gas futures | MCX | 09:00–23:35 | yahoo `NG=F` (Henry Hub) — same reason |
 
 QQE is RSI-scale based, so Brent/Henry-Hub proxies track MCX closely even
@@ -30,7 +26,8 @@ though prices differ (USD vs INR). Exact MCX contracts come later via Kite (§6)
 | Value | Rule |
 |---|---|
 | **`qqe`** *(default)* | Ported **"QQE signals"** Pine script (colinmck): Wilders-RSI → smoothed ATR-of-RSI bands; alert when the trailing line flips across RSIndex → `BUY` (Long) / `SELL` (Short). Smoother, fewer whipsaws (~5 flips/day on recent NIFTY data vs EMA20's ~11). |
-| `env` | **Magic Envelope** port: SMA20 ± `ENVELOPE_PERCENT` band (0.2%); a *full bar* beyond the band flips the side (carry-forward). Backtest on a month of 5m bars: **crude 5.3 flips/day (3–7, no dead days)**, NIFTY 0.5/day — tune per symbol. Attach per-watch with `SYMBOLS … ~env` or run globally via `/strategy env`. **Prep heads-up**: while an env watch is live, the *forming* bar beyond the band sends a one-off `⚠️ ENV pre-flip · … flip PENDING` within one cron tick — state never moves on prep, and a completed bar closing back inside the band re-arms the episode (`PREP_ALERTS=false` opts out). |
+| `env` | **Magic Envelope** port: SMA20 ± `ENVELOPE_PERCENT` band (0.2%); a *full bar* beyond the band flips the side (carry-forward). Backtest on a month of 5m bars: **crude 5.3 flips/day (3–7, no dead days)**, NIFTY 0.5/day —
+  tune per symbol. Attach per-watch with `SYMBOLS … ~env` or run globally via `/strategy env`. **Prep heads-up**: while an env watch is live, the *forming* bar beyond the band sends a one-off `⚠️ ENV pre-flip · … flip PENDING` within one cron tick — state never moves on prep, and a completed bar closing back inside the band re-arms the episode (`PREP_ALERTS=false` opts out). |
 | `ema20` | The original rule: 5m close flips below→above EMA20 → `BUY`, above→below → `SELL`. |
 | `both` | **Consensus mode**: both engines (EMA20 + QQE) run on every bar, but an alert fires **only when both agree on the same direction AND the consensus direction changes** (flip). No alert on first run (baseline), no alert while the agreed direction stays the same, and no alert when engines disagree. Individual engine sides are tracked under `key` (EMA20) and `key#qqe` for warm-up continuity and `/status` diagnosis; the consensus direction is stored under `key#both`. One daily heartbeat. **Both NIFTY and Crude now default to `~both`** — high-conviction alerts only. **Backtest (last 20 trading days, 5m bars)**: NIFTY — 8 signals (0.4/day), 75% same-day accuracy; CRUDE (BZ=F, 17:00–22:00 IST) — 42 signals (2.1/day), 55% same-day accuracy. Run `python tools/consensus_backtest.py` (NIFTY) or `python tools/consensus_backtest_crude.py` (CRUDE). |
 
@@ -142,24 +139,28 @@ python main.py --verbose                 # debug logging
   (Yahoo, level + day change by 🟢/🔴 sign), 🎯 GIFT Nifty overnight cue
   (TradingView), then the ATM straddles for NIFTY (50-pt grid) and SENSEX
   (100-pt grid): BS-indicative CE + PE premiums at the nearest strike with
-  total ₹ and % of spot (same T/IV pricing as the 09:45 alert, see
+  total ₹ and % of spot (the expiry.py pricing kernels, see
   `nse_alerts/snapshot.py`). The header counts down the next expiry
   (⏳ `exp Tue · 1.9 sess`, matching the Mon/Tue Wed/Thu Fri playbook
   rotation) and a 🛡️ guard-rail line (`−₹7k WARN · −₹10k EXIT · flat ALL
   by 15:15`) closes the message. Each block is best-effort; the 08:45
-  discipline card was **retired** (2026-10-21) — the 09:45 entry alert still
-  carries the full strangle execution rules every trading day.
-- **09:45 entry alert (every trading day)**: `strike_rule()` → closer 0.95%
-  OTM CE+PE → indicative Black-Scholes premiums (India VIX, r=0) → credit
-  floor (₹18 NIFTY / ₹40 SENSEX, else SKIP) → **2× per-leg stops** +
-  whole-position stop −0.5C (−1.0C on NIFTY 0-DTE) + session-decay target +
-  20 lots fixed + 15:15 square-off (Thu SENSEX = ⛔ NO ENTRY alert). Once per
-  day (dedupe key `expiry_alert_date`); a failed send retries every 5-min
-  tick until 10:15. The envelope is **never paused** — it keeps evaluating
-  and alerting every day; tripwires and the daily heartbeat are unaffected.
+  discipline card was **retired** (2026-10-21) and the 09:45 expiry entry
+  alert was **retired** (2026-10-22) — NIFTY + crude run their engines every
+  day.
 - **Trend tripwires (Nifty, all days)**: ±0.45% from the session open →
   `⚔️ … NO averaging`; ±0.8% → `🔴 TREND DAY … NO re-entry` — once per level
-  per day (tuned on 60d of NIFTY 5m: 3/3 big days caught).
+  per day (tuned on 60d of NIFTY 5m: 3/3 big days caught). On a declared
+  TREND DAY the engines are **gated**: a fresh BUY/SELL flip is consumed
+  silently (state still advances, heartbeat unaffected) but no entry alert
+  is sent — the flatten path is enforced, not just announced.
+- **Signal latency**: entry alerts are **confirmed on completed 5m bars only** (no
+  live half-bar whipsaws), so the earliest a cross can be announced is the
+  bar's close. The GitHub schedule runs **+2 min offset** from the bar
+  boundaries, so each tick lands inside a *forming* bar: `PREP_ALERTS=true`
+  sends a **`⚠️ … flip PENDING`** heads-up for **ema20 / qqe / both** (not just
+  env) while the live bar is crossing, before the full-bar confirmation. Every
+  confirmed alert is stamped with its own age (`⏱️ bar closed 10:10 · 2 bar(s)
+  late · sent 10:20`) so a slow pipeline never looks fresh.
 - Exit codes: `0` ok/no-op · `1` config (e.g. missing Telegram creds) ·
   `2` Telegram failed (state not saved → auto-retry next minute) · `3` data failed.
 - Logs: console + `nse_alerter.log` (Task Scheduler has no console).
@@ -225,8 +226,8 @@ Remove: `Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$fa
 
 | Provider | What it gives | When used |
 |---|---|---|
-| **tv** (default for NSE + crude) | `NSE:NIFTY1!` — actual **NIFTY futures**, continuous front-month (auto-rolls at expiry), real-time for retail users; `TVC:UKOIL` Brent CFD for crude | first choice in `DATA_PROVIDER=auto` for NSE watches **and** for crude (built-in TV override) |
-| **yahoo** (fallback for NSE & crude; **primary for other MCX**) | `^NSEI` spot proxy for NIFTY; `BZ=F` Brent + `NG=F` Henry Hub for crude/natgas | TradingView's unofficial API **rejects MCX symbols for anonymous sessions** (verified), so plain MCX watches go yahoo-first — but crude has a TV override (`TVC:UKOIL`, real-time) because `BZ=F` measured **+10 min stale** (2026-10-06: bar 20:55 at 21:09), making TV the lead and BZ=F the fallback. Alerts show `src=` of whichever fired |
+| **tv** (default for NSE + crude) | `NSE:NIFTY1!` — actual **NIFTY futures**, continuous front-month (auto-rolls at expiry), real-time for retail users; `NYMEX:BZ1!` continuous **Brent futures** for crude (the same `BZ1!` chart on TradingView) | first choice in `DATA_PROVIDER=auto` for NSE watches **and** for crude (built-in TV override) |
+| **yahoo** (fallback for NSE & crude; **primary for other MCX**) | `^NSEI` spot proxy for NIFTY; `BZ=F` Brent + `NG=F` Henry Hub for crude/natgas | TradingView's unofficial API **rejects MCX symbols for anonymous sessions** (verified), so plain MCX watches go yahoo-first — but crude has a TV override (`NYMEX:BZ1!`, real-time) because `BZ=F` measured **+10 min stale** (2026-10-06: bar 20:55 at 21:09), making TV the lead and BZ=F the fallback. Alerts show `src=` of whichever fired |
 | **kite** (opt-in paid) | your Zerodha account's real front-month futures — **exact MCX INR contracts too** (instrument master cached 6 h; a `-FUT` filter picks the NIFTY/crude/SENSEX front month automatically) | leads every chain when you set `DATA_PROVIDER=kite` + credentials; the free chain stays behind it, so a stale daily token just falls back |
 
 ## 6. Zerodha Kite (paid feed — leads the chain, with free-feed insurance)
@@ -354,9 +355,8 @@ historical candles (yfinance), then stay out of the runtime. Run from
 | `python tools/tue_5m_check.py` | Cross-checks the daily-grid verdict on **real 5m paths** where the intrabar stop order is visible: daily bars overstate stops (17–34% vs 5–9% measured — the daily model charges pre-09:45 extremes a stop that doesn't exist yet), and the 0.50% dist candidate stays **positive at all three distances** (worst-day ≈ −₹41k per entry at 10 lots — still your call) | 5m × 12 same Tuesdays, same IV ladder 11–14 |
 | `python tools/crude_ema_filter.py` | Tests the HTF EMA suggestion (only take crude envelope entries with hourly EMA20>50): **does not hold** — the gate refused a +EV stream and flipped the pilot negative. Side finding: crude's pilot EV is window-unstable (₹4,598→Rs7/day gross when the 60d window rolled — net negative after 0.5pt cost) | 5m × 60d, gate on completed 1h bars |
 
-Findings feed decisions, not code: rotation/tuning changes (e.g. closer
-strikes on expiry) land in `nse_alerts/expiry.py` (`strike_rule()`) only
-when you say go.
+Findings feed decisions, not code: rotation/tuning changes land in
+`nse_alerts/expiry.py` (the pricing kernels) only when you say go.
 
 ## 10. Roadmap / extension points
 

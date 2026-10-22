@@ -15,9 +15,8 @@ import os
 import sys
 from datetime import date, datetime, time, timedelta
 
-from . import expiry
 from .config import (INTERVAL_MINUTES, TV_SYMBOL_OVERRIDES, Config,
-                     ConfigError, Watch, strategies_for)
+                     ConfigError, strategies_for)
 from .control import effective_strategy, process_commands
 from .envelope import envelope_lines, envelope_prep
 from .market_hours import IST, in_session, is_trading_day, now_ist, session_bounds
@@ -26,7 +25,8 @@ from .providers.base import DataProvider, ProviderError, completed_bars, filter_
 from .providers.kite import KiteProvider
 from .providers.tv import TvProvider
 from .providers.yahoo import YahooProvider
-from .signals import STRATEGY_LABELS, SignalError, evaluate, prep_message
+from .signals import (STRATEGY_LABELS, SignalError, evaluate, prep_flip,
+                      prep_flip_message, prep_message)
 from .state import StateStore, SymbolState
 
 log = logging.getLogger("nse_alerts")
@@ -74,9 +74,10 @@ def _free_chain(watch) -> list[DataProvider]:
                                  if watch.yahoo_symbol else [])
     # MCX: anonymous TV access is blocked for MCX symbols, so the free
     # yahoo proxy leads there - UNLESS the watch has a TV override
-    # (crude -> TVC:UKOIL, real-time): yahoo's BZ=F measured +10 min
-    # stale (2026-10-06), so the fresh TV symbol then leads and yahoo
-    # is only the fallback. NSE keeps TradingView futures as primary.
+    # (crude -> NYMEX:BZ1!, the continuous Brent futures - real-time):
+    # yahoo's BZ=F measured +10 min stale (2026-10-06), so the fresh TV
+    # symbol then leads and yahoo is only the fallback. NSE keeps
+    # TradingView futures as primary.
     if watch.exchange == "MCX" and watch.key not in TV_SYMBOL_OVERRIDES:
         return yahoo + tv
     return tv + yahoo
@@ -94,8 +95,7 @@ def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
 
     lookback: bar budget (defaults to cfg.lookback_bars; replay passes a big
     number so past dates aren't truncated by the recent-bars tail).
-    min_bars: warm-up floor (defaults to cfg.ema_len + 2). The 09:45 expiry
-    alert only needs the last completed bar, so it passes 1.
+    min_bars: warm-up floor (defaults to cfg.ema_len + 2).
     """
     naive_now = now.astimezone(IST).replace(tzinfo=None) if now.tzinfo else now
     budget = lookback or cfg.lookback_bars
@@ -105,7 +105,7 @@ def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
         # yahoo reads the watch's proxy symbol, kite reads the raw watch
         # symbol (its own front-month picker maps MCX:CRUDEOIL to the real
         # INR contract; the TV override is TV-only), tv reads the watch
-        # symbol or its override (crude fetches TVC:UKOIL, real-time)
+        # symbol or its override (crude fetches NYMEX:BZ1!, real-time)
         if provider.name == "yahoo":
             symbol = watch.yahoo_symbol
         elif provider.name == "kite":
@@ -161,7 +161,8 @@ class _RetrySignal(Exception):
 
 
 def _run_single(cfg, store, states, watch, strats, candles, source,
-                bar_iso, today, dry_run, now, forming):
+                bar_iso, today, dry_run, now, forming,
+                trend_locked: bool = False):
     """Single-engine path (ema20 / qqe / env) — original loop logic."""
     watch_ok = False
     for index, strat in enumerate(strats):
@@ -199,10 +200,10 @@ def _run_single(cfg, store, states, watch, strats, candles, source,
             if not dry_run:
                 new_day = stored is None or stored.last_seen_date != today
                 prep_fired = stored.prep_fired if stored else False
-                if cfg.prep_alerts and strat == "env":
+                if cfg.prep_alerts:
                     prep_fired = _prep_alert(
                         cfg, watch.key, candles, forming, current_side,
-                        prep_fired, source)
+                        prep_fired, source, strategy=strat)
                 store.put(key, SymbolState(
                     last_side=current_side, last_processed_bar=bar_iso,
                     last_event_side=stored.last_event_side if stored else "",
@@ -213,9 +214,23 @@ def _run_single(cfg, store, states, watch, strats, candles, source,
                     _heartbeat(cfg, current_side, bar_iso, source,
                                strats[0], watch.key)
             continue
-        text = event.message()
+        text = event.message(now=now,
+                             interval_minutes=INTERVAL_MINUTES[cfg.interval])
         if dry_run:
             log.info("[dry-run] would send:\n%s", text)
+            continue
+        if trend_locked:
+            # 🔴 TREND DAY already declared: flatten path, no re-entry today.
+            # Advance state so the flip isn't re-fired, but send no entry alert.
+            state = stored or SymbolState(last_side=current_side)
+            state.last_side = current_side
+            state.last_processed_bar = bar_iso
+            state.last_seen_date = today
+            state.record_event(event.side, event.bar_time.isoformat())
+            store.put(key, state)
+            log.info("trend day - %s entry suppressed for %s (bar %s)",
+                     event.side, watch.key,
+                     event.bar_time.strftime("%H:%M"))
             continue
         try:
             assert cfg.telegram_token and cfg.telegram_chat_id
@@ -237,7 +252,8 @@ def _run_single(cfg, store, states, watch, strats, candles, source,
 
 
 def _run_consensus(cfg, store, states, watch, strats, candles, source,
-                   bar_iso, today, dry_run, now, forming, ok):
+                   bar_iso, today, dry_run, now, forming, ok,
+                   trend_locked: bool = False):
     """Consensus mode (~both): alert only when ALL engines agree on the
     same direction.  Individual engine sides are persisted for warm-up
     continuity and diagnosis; the #both key tracks the agreed direction."""
@@ -291,12 +307,14 @@ def _run_consensus(cfg, store, states, watch, strats, candles, source,
     return _consensus_decide(
         watch, strats, engine_sides, engine_events, candles, source,
         bar_iso, today, dry_run, store, states, cfg, consensus_stored,
-        consensus_prev, both_key, watch_ok)
+        consensus_prev, both_key, watch_ok, trend_locked,
+        now=now, forming=forming)
 
 
 def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
                       source, bar_iso, today, dry_run, store, states, cfg,
-                      consensus_stored, consensus_prev, both_key, watch_ok):
+                      consensus_stored, consensus_prev, both_key, watch_ok,
+                      trend_locked: bool = False, now=None, forming=None):
     """Check engine agreement, fire consensus alert if all agree & direction changed."""
     from .signals import CrossEvent
     sides_set = set(engine_sides.values())
@@ -338,6 +356,39 @@ def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
     if not dry_run:
         new_day = (consensus_stored is None
                    or consensus_stored.last_seen_date != today)
+        # ⚠️ forming-bar heads-up for the consensus itself: when NO confirmed
+        # flip fired this bar but the LIVE bar would flip the consensus if it
+        # closed right now, send a one-per-episode PENDING alert first (same
+        # idea as the single-engine prep). Re-arms when the pending flip
+        # disappears; a real flip clears it too.
+        prep_fired = False
+        if consensus_event is None and cfg.prep_alerts and forming is not None \
+                and consensus_prev is not None:
+            live = float(forming["Close"].iloc[-1])
+            pending = prep_flip(candles, live, consensus_prev, "both",
+                                ema_len=cfg.ema_len,
+                                rsi_period=cfg.qqe_rsi_period,
+                                sf=cfg.qqe_sf, factor=cfg.qqe_factor)
+            if pending is None:
+                prep_fired = False
+            elif not (consensus_stored.prep_fired if consensus_stored else False):
+                direction, detail = pending
+                text = prep_flip_message(
+                    watch.key, direction, live, detail,
+                    forming.index[-1].to_pydatetime(), source,
+                    consensus_prev, "both")
+                try:
+                    assert cfg.telegram_token and cfg.telegram_chat_id
+                    send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+                except NotifyError as exc:
+                    log.warning("consensus prep alert failed for %s (%s) - "
+                                "will retry", watch.key, exc)
+                except AssertionError:
+                    pass
+                else:
+                    prep_fired = True
+                    log.info("consensus prep alert sent for %s (%s live %.2f)",
+                             watch.key, direction, live)
         store.put(both_key, SymbolState(
             last_side=consensus_cur, last_processed_bar=bar_iso,
             last_event_side=(
@@ -348,14 +399,22 @@ def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
                 if consensus_event is None
                 else consensus_event.bar_time.isoformat()),
             history=(consensus_stored.history if consensus_stored else []),
-            last_seen_date=today, prep_fired=False))
+            last_seen_date=today, prep_fired=prep_fired))
         if new_day:
             _heartbeat(cfg, consensus_cur, bar_iso, source, "both", watch.key)
 
     if consensus_event is not None:
-        text = consensus_event.message()
+        text = consensus_event.message(
+            now=now, interval_minutes=INTERVAL_MINUTES[cfg.interval])
         if dry_run:
             log.info("[dry-run] would send:\n%s", text)
+        elif trend_locked:
+            # 🔴 TREND DAY already declared: flatten path, no re-entry today.
+            # The state above was already advanced with the event side, so
+            # the flip is consumed silently - just don't deliver the entry.
+            log.info("trend day - %s entry suppressed for %s (bar %s)",
+                     consensus_event.side, watch.key,
+                     consensus_event.bar_time.strftime("%H:%M"))
         else:
             try:
                 assert cfg.telegram_token and cfg.telegram_chat_id
@@ -462,21 +521,6 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
             store.set_control({**store.get_control(), "levels_date": today})
         return 0
 
-    # 09:45 entry alert, every trading day (ENTRY_SESSIONS: NIFTY Mon/Tue/Fri,
-    # SENSEX Wed/Thu): strike_rule() decision + premiums + 2x leg stops +
-    # portfolio stop/target + 15:15 square-off, once per day. Entering the
-    # block consumes this tick (mirrors the levels snapshot); a failed send leaves
-    # the key unset so the next 5-min tick retries until 10:15.
-    instrument = (expiry.EXPIRY_ROTATION.get(now.weekday())
-                  if is_trading_day(now.date(), cfg.holidays) else None)
-    if (not dry_run and instrument
-            and expiry.ALERT_FROM <= now.time() < expiry.ALERT_UNTIL
-            and store.get_control().get("expiry_alert_date") != today):
-        if _expiry_alert(cfg, now, instrument):
-            store.set_control({**store.get_control(),
-                               "expiry_alert_date": today})
-        return 0
-
     for watch in cfg.watches:
         if not dry_run and not in_session(now, cfg.holidays, watch.exchange,
                                           watch.session):
@@ -498,6 +542,14 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         bar_iso = candles.index[-1].isoformat()
         if not dry_run and watch.exchange == "NSE":
             _trend_alerts(cfg, store, candles, now, today)
+        # 🔴 TREND DAY (0.8% from open) = flatten path, NO re-entry today.
+        # The gate reads the tripwire control flags so a fresh BUY/SELL
+        # entry is suppressed once Nifty's day is declared. NSE-scoped:
+        # crude runs its own 17:00-22:00 session and is not trend-gated.
+        ctrl = store.get_control()
+        trend_locked = (watch.exchange == "NSE"
+                        and ctrl.get("trend_date") == today
+                        and bool(ctrl.get("trend_sent")))
         watch_ok = False
         strats = strategies_for(effective if override
                                 else (watch.strategy or effective))
@@ -507,14 +559,16 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
             try:
                 watch_ok = _run_consensus(
                     cfg, store, states, watch, strats, candles, source,
-                    bar_iso, today, dry_run, now, forming, ok)
+                    bar_iso, today, dry_run, now, forming, ok,
+                    trend_locked=trend_locked)
             except _RetrySignal:
                 return 2
         else:
             try:
                 watch_ok = _run_single(
                     cfg, store, states, watch, strats, candles, source,
-                    bar_iso, today, dry_run, now, forming)
+                    bar_iso, today, dry_run, now, forming,
+                    trend_locked=trend_locked)
             except _RetrySignal:
                 return 2
 
@@ -537,40 +591,61 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
 
 
 def _prep_alert(cfg: Config, key: str, candles, forming, current_side: str,
-                prep_fired: bool, source: str) -> bool:
-    """⚠️ envelope pre-flip heads-up - one per approach episode.
+                prep_fired: bool, source: str,
+                strategy: str = "env") -> bool:
+    """⚠️ forming-bar flip heads-up - one per approach episode.
 
     evaluate() stays the only path that moves state (a completed full-bar
     break); this only says the LIVE forming bar would flip if it closed right
-    now, so the band test is seen BEFORE the '+' forms. The episode re-arms
-    when a completed bar closes back inside the band; a failed send keeps the
-    flag down so the next tick retries. Returns the updated prep_fired flag.
+    now, so the signal is seen BEFORE the bar closes (EMA20/QQE/both get the
+    same heads-up the envelope already had). The episode re-arms when the
+    pending flip disappears (prep_flip() returns None). Retuned: prep_fired.
     """
-    _, up_s, lo_s = envelope_lines(candles["Close"], cfg.envelope_len,
-                                   cfg.envelope_percent,
-                                   cfg.envelope_exponential)
-    up, lo = float(up_s.iloc[-1]), float(lo_s.iloc[-1])
-    if up == up and lo == lo and lo <= float(candles["Close"].iloc[-1]) <= up:
-        prep_fired = False              # last completed bar back inside: re-arm
-    if prep_fired or forming is None:
-        return prep_fired               # episode consumed / no live row (yahoo)
-    live = float(forming["Close"].iloc[-1])
-    got = envelope_prep(candles["Close"], live, current_side,
-                        cfg.envelope_len, cfg.envelope_percent,
-                        cfg.envelope_exponential)
-    if got is None or not (cfg.telegram_token and cfg.telegram_chat_id):
+    if forming is None:
         return prep_fired
-    direction, level = got
-    text = prep_message(key, direction, live, level, cfg.envelope_percent,
-                        forming.index[-1].to_pydatetime(), source,
-                        current_side)
+    live = float(forming["Close"].iloc[-1])
+    if strategy == "env":
+        # envelope band semantics - re-arm when a completed bar is back inside
+        _, up_s, lo_s = envelope_lines(candles["Close"], cfg.envelope_len,
+                                       cfg.envelope_percent,
+                                       cfg.envelope_exponential)
+        up, lo = float(up_s.iloc[-1]), float(lo_s.iloc[-1])
+        if up == up and lo == lo and lo <= float(candles["Close"].iloc[-1]) <= up:
+            prep_fired = False              # completed bar back inside: re-arm
+        if prep_fired:
+            return prep_fired
+        got = envelope_prep(candles["Close"], live, current_side,
+                            cfg.envelope_len, cfg.envelope_percent,
+                            cfg.envelope_exponential)
+        if got is None or not (cfg.telegram_token and cfg.telegram_chat_id):
+            return prep_fired
+        direction, level = got
+        text = prep_message(key, direction, live, level, cfg.envelope_percent,
+                            forming.index[-1].to_pydatetime(), source,
+                            current_side)
+    else:
+        # ema20 / qqe / both: same contract, generic rule from signals.prep_flip
+        got = prep_flip(candles, live, current_side, strategy,
+                        ema_len=cfg.ema_len, rsi_period=cfg.qqe_rsi_period,
+                        sf=cfg.qqe_sf, factor=cfg.qqe_factor)
+        if got is None:
+            return False                     # no pending flip right now
+        direction, detail = got
+        # the heads-up is only useful while the flip is still pending and the
+        # completed side hasn't confirmed it - if the last completed bar has
+        # actually crossed, evaluate() will fire the real alert and this
+        # episode is over.
+        if prep_fired or not (cfg.telegram_token and cfg.telegram_chat_id):
+            return prep_fired
+        text = prep_flip_message(key, direction, live, detail,
+                                 forming.index[-1].to_pydatetime(), source,
+                                 current_side, strategy)
     try:
         send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
     except NotifyError as exc:
         log.warning("prep alert failed for %s (%s) - will retry", key, exc)
         return prep_fired
-    log.info("prep alert sent for %s (%s live %.2f vs band %.2f)", key,
-             direction, live, level)
+    log.info("prep alert sent for %s (%s live %.2f)", key, direction, live)
     return True
 
 
@@ -618,47 +693,6 @@ def _levels_update(cfg: Config, now: datetime) -> bool:
         log.error("levels update failed (%s) - next tick retries", exc)
         return False
     log.info("levels update sent (%s)", now.strftime("%a"))
-    return True
-
-
-def _expiry_watch(cfg: Config, instrument: str):
-    """Prefer the owner's configured watch (custom SYMBOLS/proxy), else the
-    built-in spec (NIFTY -> NSE:NIFTY1!, SENSEX -> BSE:SENSEX)."""
-    if instrument == "NIFTY":
-        for watch in cfg.watches:
-            if watch.key.upper().startswith("NIFTY"):
-                return watch
-    spec = expiry.EXPIRY_SPECS[instrument]
-    return Watch(key=spec["tv"], label=instrument, exchange=spec["exchange"],
-                 tv_symbol=spec["tv"], yahoo_symbol=spec["yahoo"])
-
-
-def _expiry_alert(cfg: Config, now: datetime, instrument: str) -> bool:
-    """09:45 entry alert: spot -> strike_rule() -> premiums -> stops/size.
-    True = sent (the caller records expiry_alert_date for the once-per-day
-    dedupe); False = a later tick inside 09:45-10:15 retries."""
-    if not (cfg.telegram_token and cfg.telegram_chat_id):
-        return False
-    watch = _expiry_watch(cfg, instrument)
-    try:
-        candles, source = fetch_candles(cfg, build_providers(cfg, watch), now,
-                                        watch, lookback=30, min_bars=1)
-    except ProviderError as exc:
-        log.error("expiry alert: no %s spot (%s) - retrying next tick",
-                  instrument, exc)
-        return False
-    spot = float(candles["Close"].iloc[-1])
-    bar_time = candles.index[-1].to_pydatetime()
-    iv, iv_src = expiry.fetch_india_vix()
-    text = expiry.build_alert(instrument, spot, bar_time, now, iv, iv_src,
-                              source)
-    try:
-        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
-    except NotifyError as exc:
-        log.error("expiry alert failed (%s) - retrying next tick", exc)
-        return False
-    log.info("expiry entry alert sent (%s, spot %.0f, src=%s)",
-             instrument, spot, source)
     return True
 
 
