@@ -805,13 +805,14 @@ def test_trend_tripwires_zone_then_trend_fire_once(monkeypatch, tmp_path):
     zone = [t for _, _, t in sent.messages if t.startswith("⚔️")]
     trend = [t for _, _, t in sent.messages if t.startswith("🔴")]
     assert len(zone) == 1 and len(trend) == 1
-    assert "NO re-entry" in trend[0]
+    assert "stops live" in trend[0]
 
 
 def test_envelope_alerts_fire_every_day_on_calm_days(rig, monkeypatch):
     """The envelope keeps evaluating and alerting daily. Calm days (<0.45%
-    from open) cross normally; a TREND DAY suppresses fresh entries instead
-    (the 09:45 strangle alert is retired)."""
+    from open) cross normally; a TREND DAY is information only - every
+    consensus/envelope signal is still delivered (the 09:45 strangle alert
+    is retired)."""
     from dataclasses import replace
     from datetime import datetime
 
@@ -854,17 +855,17 @@ def test_envelope_alerts_fire_every_day_on_calm_days(rig, monkeypatch):
             if t.startswith("SELL NIFTY1!")]         # UP -> DOWN fired
 
 
-def test_trend_day_suppresses_fresh_nifty_entries(rig, monkeypatch):
-    """🔴 TREND DAY (>= 0.8% from open) = flatten path, NO re-entry today:
-    a fresh BUY/SELL flip is consumed silently - state advances, no entry
-    alert is sent."""
-    from nse_alerts.market_hours import IST
+def test_trend_day_no_longer_suppresses_entries(rig, monkeypatch):
+    """🔴 TREND DAY (>= 0.8% from open) is INFORMATION ONLY (owner call
+    2026-10-26 - today's 11:10 SELL and 12:30 BUY consensus signals were
+    wrongly eaten by the old gate): a fresh BUY/SELL flip is DELIVERED even
+    after the day is declared, and state advances normally."""
     from nse_alerts.state import StateStore as _S
 
     cfg, provider, sent = rig
     store = _S(cfg.state_file)
 
-    # Baseline DOWN on a calm day (no trend lock).
+    # Baseline DOWN on a calm day (no trend declared).
     provider.df = make_candles([100.0] * 40 + [99.6] * 20)
     assert app.run(cfg) == 0
     assert not [t for _, _, t in sent.messages
@@ -874,15 +875,56 @@ def test_trend_day_suppresses_fresh_nifty_entries(rig, monkeypatch):
     store.set_control({"enabled": True, "trend_date": "2026-09-28",
                        "trend_sent": True})
 
-    # A rising path that would flip EMA20 DOWN -> UP (fresh BUY entry).
+    # A rising path that flips EMA20 DOWN -> UP (fresh BUY entry).
     provider.df = make_candles([100.0] * 40 + [100.7] * 20)
     assert app.run(cfg) == 0
     flips = [t for _, _, t in sent.messages
              if t.startswith(("BUY NIFTY1!", "SELL NIFTY1!"))]
-    assert flips == []                                # entry suppressed
+    assert len(flips) == 1                                # entry DELIVERED
     state = store.get(cfg.symbol)
-    assert state.last_side == "UP"                    # state still advanced
-    assert state.last_event_side == "BUY"             # flip recorded silently
+    assert state.last_side == "UP"                        # state advanced
+    assert state.last_event_side == "BUY"                 # event recorded
+
+
+def test_stale_feed_guard_skips_run_no_alert(rig, monkeypatch):
+    """FRESHNESS_GUARD on: a feed whose last bar is still forming upstream
+    (more than a full interval behind now) is REJECTED - the run can never
+    alert on partial-bar data. This is the 26 Oct bug (alert quoted the 09:55
+    close as 22,638.90; the real close was 22,724.70)."""
+    from dataclasses import replace
+
+    cfg, provider, sent = rig
+    cfg = replace(cfg, freshness_guard=True)
+    # now = Monday 13:30, candles end 11:20 -> feed hours behind -> reject
+    assert app.run(cfg) == 3                    # all providers failed
+    assert not sent.messages                     # nothing delivered
+    assert StateStore(cfg.state_file).load() == {}   # state untouched
+
+
+def test_stale_feed_forming_bar_passes_guard(rig, monkeypatch):
+    """A current feed's last row IS the forming bar - the guard must not
+    reject it; the normal split/complete handling applies."""
+    from dataclasses import replace
+
+    cfg, provider, sent = rig
+    cfg = replace(cfg, freshness_guard=True)
+    # 52 bars 09:15..13:30; at now=13:30 the last row is the forming bar
+    provider.df = make_candles(falling(52), start="2026-09-28 09:15")
+    assert app.run(cfg) == 0                     # fresh: normal baseline run
+    assert any("monitoring live" in t for *_, t in sent.messages)
+
+
+def test_stale_feed_just_closed_bar_passes_guard(rig, monkeypatch):
+    """The ambiguous boundary case: the feed's last row is the bar that just
+    closed at the current boundary - its data IS final, so it passes."""
+    from dataclasses import replace
+
+    cfg, provider, sent = rig
+    cfg = replace(cfg, freshness_guard=True)
+    # last row 13:25 just closed at 13:30 (== boundary - interval)
+    provider.df = make_candles(falling(51), start="2026-09-28 09:15")
+    assert app.run(cfg) == 0
+    assert any("monitoring live" in t for *_, t in sent.messages)
 
 
 

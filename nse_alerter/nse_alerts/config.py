@@ -189,6 +189,7 @@ class Config:
     holidays: frozenset[date]
     log_file: Path | None
     prep_alerts: bool = True     # envelope pre-flip heads-up (PREP_ALERTS=false)
+    freshness_guard: bool = True  # skip runs whose feed is lagging (FRESHNESS_GUARD)
 
     def active_strategies(self) -> list[str]:
         """Which engines run this pass, primary first (heartbeat uses [0])."""
@@ -304,4 +305,5 @@ def load_config() -> Config:
         holidays=_parse_holidays(_env("HOLIDAYS")),
         log_file=Path(log_file) if log_file else None,
         prep_alerts=_env_bool("PREP_ALERTS", True),
+        freshness_guard=_env_bool("FRESHNESS_GUARD", True),
     )

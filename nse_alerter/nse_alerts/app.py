@@ -83,10 +83,38 @@ def _free_chain(watch) -> list[DataProvider]:
     return tv + yahoo
 
 
+def _stale_feed_reason(candles, interval_minutes: int, now: datetime) -> str | None:
+    """Why the fetched frame looks like a lagging feed (or None when fresh).
+
+    A current live feed's LAST row is the still-forming bar, or at worst the
+    bar that just closed (a run landing exactly on a boundary). If the last
+    row started MORE than one full interval before the current bar boundary,
+    the feed is running behind: that row is still being formed upstream, so
+    treating its OHLC as a 'completed' close produces alert prices that never
+    appear on the chart (26 Oct: the alert quoted the 09:55 close as
+    22,638.90, the real close was 22,724.70). The run must skip until the
+    feed catches up - the state-machine dedupe then fires the real cross
+    once, on the final bar, at most a bar late.
+    """
+    if candles is None or len(candles) == 0:
+        return None
+    last_start = candles.index[-1]
+    if last_start + timedelta(minutes=interval_minutes) > now:
+        return None                      # last row IS the current forming bar
+    boundary = now.replace(minute=(now.minute // interval_minutes)
+                           * interval_minutes, second=0, microsecond=0)
+    if last_start >= boundary - timedelta(minutes=interval_minutes):
+        return None                      # the just-closed bar - data is final
+    age_min = max(0, int((now - last_start).total_seconds() // 60))
+    return (f"feed {age_min} min behind {now:%H:%M} (last bar {last_start:%H:%M} "
+            f"still forming upstream) - skip this run until it catches up")
+
+
 def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
                   watch, lookback: int | None = None,
                   min_bars: int | None = None,
-                  include_forming: bool = False):
+                  include_forming: bool = False,
+                  check_freshness: bool | None = None):
     """Try each provider in order for this watch; returns (candles, name).
 
     Session filtering is centralized here (exchange-aware): each provider
@@ -96,6 +124,8 @@ def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
     lookback: bar budget (defaults to cfg.lookback_bars; replay passes a big
     number so past dates aren't truncated by the recent-bars tail).
     min_bars: warm-up floor (defaults to cfg.ema_len + 2).
+    check_freshness: None -> cfg.freshness_guard (live runs); False disables
+    it (replay, which deliberately fetches an old session).
     """
     naive_now = now.astimezone(IST).replace(tzinfo=None) if now.tzinfo else now
     budget = lookback or cfg.lookback_bars
@@ -117,6 +147,13 @@ def fetch_candles(cfg: Config, providers: list[DataProvider], now: datetime,
         try:
             candles = provider.fetch(symbol, cfg.interval, budget)
             candles = filter_session(candles, watch.exchange)
+            if (check_freshness if check_freshness is not None
+                    else cfg.freshness_guard):
+                stale = _stale_feed_reason(candles,
+                                           INTERVAL_MINUTES[cfg.interval],
+                                           naive_now)
+                if stale:
+                    raise ProviderError(stale)
             closed = completed_bars(candles, INTERVAL_MINUTES[cfg.interval],
                                     naive_now)
             if len(closed) < need:
@@ -161,8 +198,7 @@ class _RetrySignal(Exception):
 
 
 def _run_single(cfg, store, states, watch, strats, candles, source,
-                bar_iso, today, dry_run, now, forming,
-                trend_locked: bool = False):
+                bar_iso, today, dry_run, now, forming):
     """Single-engine path (ema20 / qqe / env) — original loop logic."""
     watch_ok = False
     for index, strat in enumerate(strats):
@@ -219,19 +255,6 @@ def _run_single(cfg, store, states, watch, strats, candles, source,
         if dry_run:
             log.info("[dry-run] would send:\n%s", text)
             continue
-        if trend_locked:
-            # 🔴 TREND DAY already declared: flatten path, no re-entry today.
-            # Advance state so the flip isn't re-fired, but send no entry alert.
-            state = stored or SymbolState(last_side=current_side)
-            state.last_side = current_side
-            state.last_processed_bar = bar_iso
-            state.last_seen_date = today
-            state.record_event(event.side, event.bar_time.isoformat())
-            store.put(key, state)
-            log.info("trend day - %s entry suppressed for %s (bar %s)",
-                     event.side, watch.key,
-                     event.bar_time.strftime("%H:%M"))
-            continue
         try:
             assert cfg.telegram_token and cfg.telegram_chat_id
             send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
@@ -252,8 +275,7 @@ def _run_single(cfg, store, states, watch, strats, candles, source,
 
 
 def _run_consensus(cfg, store, states, watch, strats, candles, source,
-                   bar_iso, today, dry_run, now, forming, ok,
-                   trend_locked: bool = False):
+                   bar_iso, today, dry_run, now, forming, ok):
     """Consensus mode (~both): alert only when ALL engines agree on the
     same direction.  Individual engine sides are persisted for warm-up
     continuity and diagnosis; the #both key tracks the agreed direction."""
@@ -307,14 +329,14 @@ def _run_consensus(cfg, store, states, watch, strats, candles, source,
     return _consensus_decide(
         watch, strats, engine_sides, engine_events, candles, source,
         bar_iso, today, dry_run, store, states, cfg, consensus_stored,
-        consensus_prev, both_key, watch_ok, trend_locked,
+        consensus_prev, both_key, watch_ok,
         now=now, forming=forming)
 
 
 def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
                       source, bar_iso, today, dry_run, store, states, cfg,
                       consensus_stored, consensus_prev, both_key, watch_ok,
-                      trend_locked: bool = False, now=None, forming=None):
+                      now=None, forming=None):
     """Check engine agreement, fire consensus alert if all agree & direction changed."""
     from .signals import CrossEvent
     sides_set = set(engine_sides.values())
@@ -408,13 +430,6 @@ def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
             now=now, interval_minutes=INTERVAL_MINUTES[cfg.interval])
         if dry_run:
             log.info("[dry-run] would send:\n%s", text)
-        elif trend_locked:
-            # 🔴 TREND DAY already declared: flatten path, no re-entry today.
-            # The state above was already advanced with the event side, so
-            # the flip is consumed silently - just don't deliver the entry.
-            log.info("trend day - %s entry suppressed for %s (bar %s)",
-                     consensus_event.side, watch.key,
-                     consensus_event.bar_time.strftime("%H:%M"))
         else:
             try:
                 assert cfg.telegram_token and cfg.telegram_chat_id
@@ -542,14 +557,6 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
         bar_iso = candles.index[-1].isoformat()
         if not dry_run and watch.exchange == "NSE":
             _trend_alerts(cfg, store, candles, now, today)
-        # 🔴 TREND DAY (0.8% from open) = flatten path, NO re-entry today.
-        # The gate reads the tripwire control flags so a fresh BUY/SELL
-        # entry is suppressed once Nifty's day is declared. NSE-scoped:
-        # crude runs its own 17:00-22:00 session and is not trend-gated.
-        ctrl = store.get_control()
-        trend_locked = (watch.exchange == "NSE"
-                        and ctrl.get("trend_date") == today
-                        and bool(ctrl.get("trend_sent")))
         watch_ok = False
         strats = strategies_for(effective if override
                                 else (watch.strategy or effective))
@@ -559,16 +566,14 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
             try:
                 watch_ok = _run_consensus(
                     cfg, store, states, watch, strats, candles, source,
-                    bar_iso, today, dry_run, now, forming, ok,
-                    trend_locked=trend_locked)
+                    bar_iso, today, dry_run, now, forming, ok)
             except _RetrySignal:
                 return 2
         else:
             try:
                 watch_ok = _run_single(
                     cfg, store, states, watch, strats, candles, source,
-                    bar_iso, today, dry_run, now, forming,
-                    trend_locked=trend_locked)
+                    bar_iso, today, dry_run, now, forming)
             except _RetrySignal:
                 return 2
 
@@ -700,9 +705,11 @@ def _trend_alerts(cfg: Config, store: StateStore, candles, now: datetime,
                   today: str) -> None:
     """Nifty distance-from-open tripwires (Nifty drives ALL days, Sensex
     included - per the trading plan). ⚔️ 0.45% ~= the 2-strike zone: no
-    averaging. 🔴 0.8% = trend day: flatten path, no re-entry. Thresholds
-    tuned on 60d of NIFTY 5m (3/3 big days caught). One fire per level per
-    day; a failed send retries next run; failures never touch signal state."""
+    averaging. 🔴 0.8% = trend day: pure day-status heads-up - the entries
+    themselves are NEVER gated (every consensus signal is delivered; a trend
+    day just tells you the day is a strong one). Thresholds tuned on 60d of
+    NIFTY 5m (3/3 big days caught). One fire per level per day; a failed send
+    retries next run; failures never touch signal state."""
     day = candles[candles.index.date == now.date()]
     if day.empty:
         return
@@ -722,7 +729,7 @@ def _trend_alerts(cfg: Config, store: StateStore, candles, now: datetime,
         updates["zone_sent"] = True
     if peak >= 0.8 and not ctrl.get("trend_sent") and _trend_send(
             cfg, f"🔴 TREND DAY · NIFTY {peak:.2f}% from open ({side})\n"
-                 "flatten path · NO re-entry today"):
+                 "flatten path · stops live · exits per plan"):
         updates["trend_sent"] = True
     if updates:
         store.set_control({**ctrl, **updates})
@@ -800,7 +807,8 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
     try:
         # big lookback: replay needs the past date inside the fetched window
         candles, source = fetch_candles(cfg, build_providers(cfg, watch),
-                                        cutoff, watch, lookback=5000)
+                                        cutoff, watch, lookback=5000,
+                                        check_freshness=False)
     except ProviderError as exc:
         print(f"replay: no data ({exc})")
         return []

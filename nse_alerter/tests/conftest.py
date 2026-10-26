@@ -64,6 +64,8 @@ def make_config(tmp_path, **overrides) -> Config:
         state_file=tmp_path / "state.json",
         holidays=frozenset(),
         log_file=None,
+        freshness_guard=False,   # static fixtures end before "now"; the guard is
+        # exercised by its own focused tests (test_app.py::test_stale_feed_*)
     )
     values.update(overrides)
     return Config(**values)

@@ -148,11 +148,18 @@ python main.py --verbose                 # debug logging
   alert was **retired** (2026-10-22) — NIFTY + crude run their engines every
   day.
 - **Trend tripwires (Nifty, all days)**: ±0.45% from the session open →
-  `⚔️ … NO averaging`; ±0.8% → `🔴 TREND DAY … NO re-entry` — once per level
-  per day (tuned on 60d of NIFTY 5m: 3/3 big days caught). On a declared
-  TREND DAY the engines are **gated**: a fresh BUY/SELL flip is consumed
-  silently (state still advances, heartbeat unaffected) but no entry alert
-  is sent — the flatten path is enforced, not just announced.
+  `⚔️ … NO averaging`; ±0.8% → `🔴 TREND DAY … stops live` — once per level
+  per day (tuned on 60d of NIFTY 5m: 3/3 big days caught). The tripwires are
+  **information only**: every consensus/envelope signal is still **delivered**
+  even after the day is declared (owner call 2026-10-26 — the gate that used
+  to swallow re-entries was removed; 26 Oct's 11:10 SELL and 12:30 BUY both
+  go out now).
+- **Stale-feed guard (`FRESHNESS_GUARD=true`)**: live runs are **skipped** when
+  the feed's last bar is still forming upstream (more than one bar behind the
+  current boundary). A lagging feed otherwise produces alert prices that never
+  appear on the chart (26 Oct: the 09:55 "close 22,638.90" card vs the real
+  22,724.70). The state dedupe then fires the real cross once, on final data,
+  at most a bar late. Set `false` to disable.
 - **Signal latency**: entry alerts are **confirmed on completed 5m bars only** (no
   live half-bar whipsaws), so the earliest a cross can be announced is the
   bar's close. The GitHub schedule runs **+2 min offset** from the bar
