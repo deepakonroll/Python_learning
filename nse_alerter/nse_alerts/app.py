@@ -1,9 +1,9 @@
 """Orchestration: gate -> fetch -> evaluate cross -> dedupe -> Telegram -> state.
 
 Exit codes (visible in Task Scheduler's "Last Run Result"):
-    0 = ok / skipped (outside session, no signal)
+    0 = ok / skipped (outside session, no signal, or transient delivery failure)
     1 = configuration problem
-    2 = Telegram delivery failed (state NOT saved -> retried next minute)
+    2 = (reserved - Telegram failures now skip the run, return 0)
     3 = (reserved - provider failures now skip the run, return 0)
 """
 
@@ -573,14 +573,20 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
                     cfg, store, states, watch, strats, candles, source,
                     bar_iso, today, dry_run, now, forming, ok)
             except _RetrySignal:
-                return 2
+                # Telegram delivery failed - state NOT saved, so next run
+                # retries the same bar.  Return 0 to keep the cron job green;
+                # the warning log is still visible for diagnosis.
+                return 0
         else:
             try:
                 watch_ok = _run_single(
                     cfg, store, states, watch, strats, candles, source,
                     bar_iso, today, dry_run, now, forming)
             except _RetrySignal:
-                return 2
+                # Telegram delivery failed - state NOT saved, so next run
+                # retries the same bar.  Return 0 to keep the cron job green;
+                # the warning log is still visible for diagnosis.
+                return 0
 
         if watch_ok:
             ok += 1
