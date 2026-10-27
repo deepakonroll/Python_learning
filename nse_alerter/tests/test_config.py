@@ -52,14 +52,21 @@ def test_state_keys_are_per_strategy():
 
 def test_default_symbols_is_nifty_plus_crude_ng_off(monkeypatch):
     cfg = _load(monkeypatch)
-    assert [w.key for w in cfg.watches] == ["NIFTY1!", "MCX:CRUDEOIL"]
+    assert [w.key for w in cfg.watches] == ["NIFTY1!", "NIFTY1!", "MCX:CRUDEOIL", "MCX:CRUDEOIL"]
     assert cfg.symbol == "NIFTY1!"                     # primary = first watch
     assert cfg.yahoo_symbol == "^NSEI"
-    assert cfg.watches[0].strategy == "both"           # NIFTY on EMA20+QQE consensus
-    assert cfg.watches[1].strategy == "both"           # crude: QQE + EMA20, no env
-    assert cfg.watches[1].exchange == "MCX"
-    assert cfg.watches[1].yahoo_symbol == "BZ=F"        # Brent proxy built in
-    assert cfg.watches[1].session is not None            # crude gated 17:00-22:00
+    assert cfg.watches[0].strategy == "qqe"            # NIFTY QQE-only
+    assert cfg.watches[0].session is None              # NIFTY: full NSE session
+    assert cfg.watches[1].strategy == "both"           # NIFTY QQE+EMA20 consensus
+    assert cfg.watches[1].session is None              # NIFTY: full NSE session
+    # crude ~qqe: QQE-only buy/sell, independent state key MCX:CRUDEOIL#qqe
+    assert cfg.watches[2].strategy == "qqe"
+    assert cfg.watches[2].exchange == "MCX"
+    assert cfg.watches[2].yahoo_symbol == "BZ=F"       # Brent proxy built in
+    assert cfg.watches[2].session is not None          # crude gated 17:00-22:00
+    # crude ~both: QQE+EMA20 consensus, state key MCX:CRUDEOIL#both
+    assert cfg.watches[3].strategy == "both"
+    assert cfg.watches[3].session is not None
 
     # re-enabling NG stays a pure config change:
     from nse_alerts.config import parse_watches

@@ -301,10 +301,9 @@ def test_both_strategies_baseline_with_single_heartbeat(rig):
 
 
 def test_default_crude_watch_alerts_qqe_and_ema_without_env(rig, monkeypatch):
-    """Owner call 2026-10-17: default SYMBOLS moved crude ~env -> ~both.
-    With consensus mode, ~both fires ONE alert only when both engines
-    agree on the same direction.  Zero env/prep artifacts; NIFTY's ~both
-    is untouched and gated out at this hour."""
+    """Default SYMBOLS: NIFTY~qqe, crude~qqe, crude~both.
+    Each crude flip produces TWO alerts: one QQE-only (~qqe watch) and
+    one QQE+EMA20 consensus (~both watch).  Zero env artifacts."""
     from dataclasses import replace
     from datetime import datetime
 
@@ -324,26 +323,31 @@ def test_default_crude_watch_alerts_qqe_and_ema_without_env(rig, monkeypatch):
     run_at(datetime(2026, 9, 28, 18, 0, tzinfo=IST),
            make_candles(rising(150), start="2026-09-28 09:15", minutes=1))
     states = StateStore(cfg.state_file).load()
-    assert "MCX:CRUDEOIL" in states                 # ema20 key (base)
-    assert "MCX:CRUDEOIL#qqe" in states             # dedicated QQE key
+    assert "MCX:CRUDEOIL" in states                 # ema20 key (base, from ~both)
+    assert "MCX:CRUDEOIL#qqe" in states             # dedicated QQE key (shared)
     assert "MCX:CRUDEOIL#both" in states            # consensus key
     assert "MCX:CRUDEOIL#env" not in states         # env engine never runs
     assert not [t for _, _, t in sent.messages
                 if t.startswith(("BUY MCX", "SELL MCX")) or "pre-flip" in t]
 
-    # same day: rise THEN crash - both engines flip DOWN, consensus fires
-    # one SELL alert tagged with both engine details.
+    # same day: rise THEN crash - both engines flip DOWN, two SELL alerts fire:
+    #   1) QQE-only from the ~qqe watch
+    #   2) EMA20+QQE consensus from the ~both watch
     peak = [100.0 + 0.5 * i for i in range(80)]
     crash = [peak[-1] - 0.8 * i for i in range(1, 61)]
     run_at(datetime(2026, 9, 28, 18, 5, tzinfo=IST),
            make_candles(peak + crash, start="2026-09-28 12:00", minutes=1))
     crude = [t for _, _, t in sent.messages if "MCX:CRUDEOIL" in t]
     flips = [t for t in crude if t.startswith(("BUY MCX", "SELL MCX"))]
-    assert len(flips) == 1                           # ONE consensus alert
-    assert flips[0].startswith("SELL MCX:CRUDEOIL")
-    assert "EMA20+QQE consensus" in flips[0]        # consensus label
-    assert "EMA20 cross" in flips[0]                # includes EMA20 detail
-    assert "QQE signals" in flips[0]                # includes QQE detail
+    assert len(flips) == 2                          # qqe-only + consensus
+    qqe_only = [t for t in flips if "QQE signals" in t and "consensus" not in t]
+    consensus = [t for t in flips if "EMA20+QQE consensus" in t]
+    assert len(qqe_only) == 1
+    assert len(consensus) == 1
+    assert qqe_only[0].startswith("SELL MCX:CRUDEOIL")
+    assert consensus[0].startswith("SELL MCX:CRUDEOIL")
+    assert "EMA20 cross" in consensus[0]            # includes EMA20 detail
+    assert "QQE signals" in consensus[0]            # includes QQE detail
     assert not [t for t in crude if "ENV pre-flip" in t
                 or "Magic Envelope" in t]            # env fully off for crude
 
@@ -403,7 +407,8 @@ def test_both_consensus_no_alert_when_engines_disagree(rig, monkeypatch):
 
 def test_both_consensus_alert_when_both_engines_flip_same_direction(rig, monkeypatch):
     """~both consensus: when both engines flip from UP->DOWN on the same
-    bar, a single SELL consensus alert fires (not two separate alerts)."""
+    bar, crude produces TWO alerts: one QQE-only (~qqe watch) and one
+    EMA20+QQE consensus (~both watch)."""
     from dataclasses import replace
     from datetime import datetime
 
@@ -421,7 +426,7 @@ def test_both_consensus_alert_when_both_engines_flip_same_direction(rig, monkeyp
                                minutes=1)
     assert app.run(cfg) == 0
 
-    # Crash: both flip DOWN -> one consensus SELL
+    # Crash: both flip DOWN -> qqe-only alert + consensus SELL
     peak = [100.0 + 0.5 * i for i in range(80)]
     crash = [peak[-1] - 0.8 * i for i in range(1, 61)]
     monkeypatch.setattr(app, "now_ist",
@@ -433,9 +438,14 @@ def test_both_consensus_alert_when_both_engines_flip_same_direction(rig, monkeyp
     crude_alerts = [t for _, _, t in sent.messages
                     if "MCX:CRUDEOIL" in t
                     and t.startswith(("BUY MCX", "SELL MCX"))]
-    assert len(crude_alerts) == 1
-    assert crude_alerts[0].startswith("SELL MCX:CRUDEOIL")
-    assert "EMA20+QQE consensus" in crude_alerts[0]
+    assert len(crude_alerts) == 2                   # qqe-only + consensus
+    qqe_only = [t for t in crude_alerts if "QQE signals" in t and "consensus" not in t]
+    consensus = [t for t in crude_alerts if "EMA20+QQE consensus" in t]
+    assert len(qqe_only) == 1
+    assert len(consensus) == 1
+    assert qqe_only[0].startswith("SELL MCX:CRUDEOIL")
+    assert consensus[0].startswith("SELL MCX:CRUDEOIL")
+    assert "EMA20+QQE consensus" in consensus[0]
 
     # Verify state: consensus key recorded the event
     states = StateStore(cfg.state_file).load()

@@ -77,10 +77,11 @@ TV_SYMBOL_OVERRIDES: dict[str, str] = {
     "MCX:CRUDEOILM": "NYMEX:BZ1!",
 }
 
-SYMBOLS_DEFAULT = "NIFTY1!~both,MCX:CRUDEOIL~both@17:00-22:00"
-# Both watches on EMA20+QQE consensus: alert fires only when both engines
-# agree on direction (high conviction, filters whipsaws).
-# Individual engine sides tracked for warm-up; consensus under key#both.
+SYMBOLS_DEFAULT = "NIFTY1!~qqe,NIFTY1!~both,MCX:CRUDEOIL~qqe@17:00-22:00,MCX:CRUDEOIL~both@17:00-22:00"
+# NIFTY1!~qqe   -> QQE-only buy/sell on NIFTY (full NSE session)
+# NIFTY1!~both  -> QQE+EMA20 consensus on NIFTY (state key: NIFTY1!#both)
+# MCX:CRUDEOIL~qqe@17:00-22:00   -> QQE-only buy/sell on crude (state key: MCX:CRUDEOIL#qqe)
+# MCX:CRUDEOIL~both@17:00-22:00 -> QQE+EMA20 consensus on crude (state key: MCX:CRUDEOIL#both)
 # Crude gated 17:00-22:00 IST (+5 min close grace); NG off.
 
 
