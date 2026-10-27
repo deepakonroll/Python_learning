@@ -4,7 +4,7 @@ Exit codes (visible in Task Scheduler's "Last Run Result"):
     0 = ok / skipped (outside session, no signal)
     1 = configuration problem
     2 = Telegram delivery failed (state NOT saved -> retried next minute)
-    3 = all data providers failed
+    3 = (reserved - provider failures now skip the run, return 0)
 """
 
 from __future__ import annotations
@@ -588,8 +588,13 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
             failed += 1
 
     if ok == 0 and failed > 0:
-        log.error("no watch could be evaluated this run (%d failed)", failed)
-        return 3
+        # All providers failed (typically feed lag / freshness guard).  Skip
+        # this run rather than hard-failing: the next scheduled run retries,
+        # and the state-machine dedupe guarantees the cross fires at most one
+        # bar late once the feed catches up.  Returning 0 keeps the cron job
+        # green; the warning log is still visible for diagnosis.
+        log.warning("no watch could be evaluated this run (%d failed) - skipped, will retry", failed)
+        return 0
     if (ok == 0 and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
             and now.time() < session_bounds("MCX")[0]
             and not (time(8, 45) <= now.time() < time(9, 10))):  # pre-open quiet window

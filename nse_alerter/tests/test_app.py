@@ -149,10 +149,10 @@ def test_holiday_is_a_noop(rig, monkeypatch):
     assert provider.calls == 0
 
 
-def test_all_providers_down_returns_3(rig):
+def test_all_providers_down_skips_run(rig):
     cfg, provider, _ = rig
     provider.error = "network down"
-    assert app.run(cfg) == 3
+    assert app.run(cfg) == 0
 
 
 def test_test_notify_works_outside_session(rig, monkeypatch):
@@ -460,7 +460,7 @@ def test_qqe_mode_ignores_ema_data_length_requirements(rig):
     cfg, provider, _ = rig
     cfg = __import__("dataclasses").replace(cfg, strategy="qqe")
     provider.df = make_candles(WAVE_FALL[:40])              # below QQE warm-up
-    assert app.run(cfg) == 3                                # clear data error
+    assert app.run(cfg) == 0                                # skipped, retries next run
 
 
 def test_telegram_strategy_command_switches_this_run(rig, monkeypatch):
@@ -906,7 +906,7 @@ def test_stale_feed_guard_skips_run_no_alert(rig, monkeypatch):
     cfg, provider, sent = rig
     cfg = replace(cfg, freshness_guard=True)
     # now = Monday 13:30, candles end 11:20 -> feed hours behind -> reject
-    assert app.run(cfg) == 3                    # all providers failed
+    assert app.run(cfg) == 0                    # skipped, retries next run
     assert not sent.messages                     # nothing delivered
     assert StateStore(cfg.state_file).load() == {}   # state untouched
 
