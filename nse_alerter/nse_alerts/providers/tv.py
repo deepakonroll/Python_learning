@@ -10,12 +10,16 @@ Timestamps from the library are true UTC -> normalize_candles() converts to IST.
 
 from __future__ import annotations
 
+import logging
 import time as _time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import pandas as pd
 
 from ..config import INTERVAL_MINUTES
 from .base import ProviderError, normalize_candles
+
+log = logging.getLogger("nse_alerts.tv")
 
 # our interval key -> tvDatafeed Interval member name
 _TV_INTERVAL = {
@@ -29,6 +33,7 @@ _TV_INTERVAL = {
 
 ATTEMPTS = 3
 SLEEP_SECONDS = 1.5
+TV_FETCH_TIMEOUT = 8          # seconds per get_hist attempt - never let one hang
 
 
 class TvProvider:
@@ -62,10 +67,10 @@ class TvProvider:
         last_error: Exception | None = None
         for attempt in range(1, self.attempts + 1):
             try:
-                raw = self._connect().get_hist(
+                raw = self._fetch_with_timeout(
                     symbol=symbol,
                     exchange=exchange,
-                    interval=tv_interval,
+                    tv_interval=tv_interval,
                     n_bars=lookback,
                 )
                 if raw is None or raw.empty:
@@ -76,6 +81,10 @@ class TvProvider:
                 return candles
             except ProviderError as exc:
                 last_error = exc
+            except FutureTimeoutError as exc:
+                last_error = exc
+                self._client = None                   # force reconnect next try
+                log.warning("attempt %s timed out after %ss", attempt, TV_FETCH_TIMEOUT)
             except Exception as exc:                  # websocket drops, parse errors...
                 last_error = exc
                 self._client = None                   # force reconnect next try
@@ -83,3 +92,15 @@ class TvProvider:
                 self._sleep(SLEEP_SECONDS)
 
         raise ProviderError(f"tv fetch failed after {self.attempts} attempts: {last_error}")
+
+    def _fetch_with_timeout(self, symbol: str, exchange: str, tv_interval, n_bars: int):
+        """Run get_hist in a worker thread with a hard per-attempt timeout."""
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                self._connect().get_hist,
+                symbol=symbol,
+                exchange=exchange,
+                interval=tv_interval,
+                n_bars=n_bars,
+            )
+            return future.result(timeout=TV_FETCH_TIMEOUT)

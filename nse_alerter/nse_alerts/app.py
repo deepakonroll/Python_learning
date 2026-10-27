@@ -469,9 +469,14 @@ def run(cfg: Config, *, dry_run: bool = False, test_notify: bool = False,
     # so they answer anytime a run happens; dry runs never poll (getUpdates is a
     # consuming read reserved for the live scheduler).
     store = StateStore(cfg.state_file)
-    if not dry_run and not process_commands(cfg, store):
-        log.info("alerts disabled via Telegram /disable - nothing to do")
-        return 0
+    try:
+        if not dry_run and not process_commands(cfg, store):
+            log.info("alerts disabled via Telegram /disable - nothing to do")
+            return 0
+    except NotifyError as exc:
+        # Telegram is down for polling - don't kill the run; alerts can still
+        # be evaluated (sends will be retried on the next successful run).
+        log.warning("Telegram command poll failed: %s - proceeding without it", exc)
 
     # Telegram /strategy override beats env/default - mobile-first switching;
     # a per-watch '~strategy' suffix (SYMBOLS) applies ONLY when no global
