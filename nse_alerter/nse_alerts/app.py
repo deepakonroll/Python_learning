@@ -194,7 +194,7 @@ def split_forming(candles, interval_minutes: int, now: datetime):
 
 class _RetrySignal(Exception):
     """Raised by _run_single / _run_consensus on Telegram send failure
-    so the caller (run()) can return exit code 2."""
+    so the caller (run()) can return 0 and let the next scheduled run retry."""
 
 
 def _run_single(cfg, store, states, watch, strats, candles, source,
