@@ -149,6 +149,7 @@ class FakeKite:
         self._raw = raw if raw is not None else []
         self.instruments_calls = 0
         self.historical_calls = 0
+        self.historical_data_calls = 0
         self.last = None
 
     def instruments(self):
@@ -158,6 +159,12 @@ class FakeKite:
     def historical(self, token, from_, to, interval):
         self.historical_calls += 1
         self.last = (token, from_, to, interval)
+        return self._raw
+
+    def historical_data(self, instrument_token, from_date, to_date, interval,
+                        continuous=False, oi=False):
+        self.historical_data_calls += 1
+        self.last = (instrument_token, from_date, to_date, interval)
         return self._raw
 
 
@@ -217,7 +224,7 @@ def test_instruments_master_downloaded_once_per_ttl_window():
     kite.fetch("MCX:CRUDEOIL", "5m", 30)
     kite.fetch("MCX:CRUDEOIL", "5m", 30)
     assert fake.instruments_calls == 1                      # cached, not re-fetched
-    assert fake.historical_calls == 2
+    assert fake.historical_data_calls == 2
 
 
 def test_instruments_cache_expires_after_ttl(monkeypatch):

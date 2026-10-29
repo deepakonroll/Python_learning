@@ -151,11 +151,12 @@ class KiteProvider:
             contract = pick_front_month(self._instruments(kite),
                                         parse_base_symbol(symbol), now)
             days_back = 7 if _KITE_INTERVAL[interval] != "day" else lookback + 10
-            raw = kite.historical(
+            raw = kite.historical_data(
                 contract["instrument_token"],
                 (now - pd.Timedelta(days=days_back)).strftime("%Y-%m-%d %H:%M:%S"),
                 now.strftime("%Y-%m-%d %H:%M:%S"),
                 _KITE_INTERVAL[interval],
+                oi=True,                # open interest column for _HIST_COLS
             )
             if raw is None or len(raw) == 0:
                 raise ProviderError("kite returned no candles")
