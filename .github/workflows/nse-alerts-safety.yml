@@ -47,6 +47,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           STATE_FILE: ${{ github.workspace }}/nse_alerter/state.json
+          # Zerodha Kite (requires paid Kite Connect plan; token rotates daily)
+          KITE_API_KEY: ${{ secrets.KITE_API_KEY }}
+          KITE_ACCESS_TOKEN: ${{ secrets.KITE_ACCESS_TOKEN }}
           STRATEGY: ${{ vars.STRATEGY || 'qqe' }}
           SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!~qqe,NIFTY1!~both,MCX:CRUDEOIL~qqe@17:00-22:00,MCX:CRUDEOIL~both@17:00-22:00' }}
           HOLIDAYS: ${{ vars.HOLIDAYS || '2026-01-15,2026-01-26,2026-03-03,2026-03-26,2026-03-31,2026-04-03,2026-04-14,2026-05-01,2026-05-28,2026-06-26,2026-09-14,2026-10-02,2026-10-20,2026-11-10,2026-11-24,2026-12-25' }}
