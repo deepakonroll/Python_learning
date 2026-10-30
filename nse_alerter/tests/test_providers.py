@@ -1,6 +1,8 @@
 """Candle normalization/shape handling + Kite front-month selection."""
 
 from datetime import datetime, timedelta
+import threading
+import time
 
 import pandas as pd
 import pytest
@@ -14,7 +16,29 @@ from nse_alerts.providers.base import (
 )
 from nse_alerts.providers.kite import (KiteProvider, candles_frame,
                                        parse_base_symbol, pick_front_month)
+from nse_alerts.providers.tv import TvProvider
 from tests.conftest import falling, make_candles
+
+
+def test_tv_fetch_timeout_does_not_wait_for_hung_worker(monkeypatch):
+    import nse_alerts.providers.tv as tv
+
+    release = threading.Event()
+
+    class SlowClient:
+        def get_hist(self, **kwargs):
+            release.wait(timeout=1)
+            return None
+
+    provider = TvProvider(attempts=1)
+    provider._client = SlowClient()
+    monkeypatch.setattr(tv, "TV_FETCH_TIMEOUT", 0.01)
+
+    started = time.monotonic()
+    with pytest.raises(tv.FutureTimeoutError):
+        provider._fetch_with_timeout("NIFTY1!", "NSE", None, 10)
+    assert time.monotonic() - started < 0.2
+    release.set()
 
 
 def test_lowercase_tv_columns_and_utc_index_are_normalized():

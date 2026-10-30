@@ -11,8 +11,10 @@ Timestamps from the library are true UTC -> normalize_candles() converts to IST.
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 import time as _time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 import pandas as pd
 
@@ -94,13 +96,39 @@ class TvProvider:
         raise ProviderError(f"tv fetch failed after {self.attempts} attempts: {last_error}")
 
     def _fetch_with_timeout(self, symbol: str, exchange: str, tv_interval, n_bars: int):
-        """Run get_hist in a worker thread with a hard per-attempt timeout."""
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                self._connect().get_hist,
-                symbol=symbol,
-                exchange=exchange,
-                interval=tv_interval,
-                n_bars=n_bars,
-            )
-            return future.result(timeout=TV_FETCH_TIMEOUT)
+        """Run get_hist in a daemon thread without waiting on timed-out work.
+
+        ThreadPoolExecutor's context manager joins its worker on exit, which
+        defeats Future.result(timeout=...). A daemon thread lets this attempt
+        return on time; a stuck socket cannot hold up the next provider or the
+        one-shot process shutdown.
+        """
+        result: queue.Queue = queue.Queue(maxsize=1)
+        cached_client = self._client
+
+        def fetch():
+            try:
+                client = cached_client
+                if client is None:
+                    from tvDatafeed import TvDatafeed
+                    client = TvDatafeed()               # anonymous access
+                raw = client.get_hist(
+                    symbol=symbol,
+                    exchange=exchange,
+                    interval=tv_interval,
+                    n_bars=n_bars,
+                )
+                result.put((True, (client, raw)))
+            except BaseException as exc:                 # forward worker errors
+                result.put((False, exc))
+
+        threading.Thread(target=fetch, name="tv-get-hist", daemon=True).start()
+        try:
+            succeeded, payload = result.get(timeout=TV_FETCH_TIMEOUT)
+        except queue.Empty as exc:
+            raise FutureTimeoutError(
+                f"tv get_hist exceeded {TV_FETCH_TIMEOUT}s") from exc
+        if not succeeded:
+            raise payload
+        self._client, raw = payload
+        return raw

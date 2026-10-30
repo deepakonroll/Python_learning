@@ -199,7 +199,7 @@ poll `getUpdates` (it's a consuming read reserved for the live scheduler).
 > These Telegram commands are the phone-first way to pause/resume; the web
 > toggle (Actions → nse-alerts → ⋯) remains for fully switching the cron off.
 
-## 4. Schedule (Windows Task Scheduler — every minute, Mon–Fri, 09:14–15:35 IST)
+## 4. Schedule (Windows Task Scheduler — NSE daytime + crude evening)
 
 Run once in PowerShell (**fill `.env` first** — otherwise in-session runs exit 1):
 
@@ -214,6 +214,15 @@ $rep.Interval  = "PT1M"        # every 1 minute
 $rep.Duration  = "PT6H21M"     # 09:14 -> 15:35
 $trigger.Repetition = $rep
 Register-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Action $action -Trigger $trigger -Description "NIFTY fut 5m EMA20 cross -> Telegram" -Force
+
+# Crude alerts run in the evening MCX session (17:00–22:00 IST).
+$crudeAction = New-ScheduledTaskAction -Execute $py -Argument "$dir\main.py" -WorkingDirectory $dir
+$crudeTrigger = New-ScheduledTaskTrigger -Daily -At "17:00"
+$crudeRep = New-CimInstance -CimClass (Get-CimClass -Namespace "Root\Microsoft\Windows\TaskScheduler" -ClassName "MSFT_TaskRepetitionPattern") -ClientOnly
+$crudeRep.Interval = "PT1M"
+$crudeRep.Duration = "PT5H5M"  # 17:00 -> 22:05; app session gate ends at 22:00
+$crudeTrigger.Repetition = $crudeRep
+Register-ScheduledTask -TaskName "MCX-Crude-Alerter" -Action $crudeAction -Trigger $crudeTrigger -Description "MCX crude 5m alerts -> Telegram" -Force
 ```
 
 Outside market hours the task still fires but exits immediately (cheap no-op);
@@ -224,10 +233,11 @@ Check it with:
 
 ```powershell
 Get-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" | Get-ScheduledTaskInfo
+Get-ScheduledTask -TaskName "MCX-Crude-Alerter" | Get-ScheduledTaskInfo
 Get-Content d:\Cursor\python_for_java_devs\nse_alerter\nse_alerter.log -Tail 20 -Wait
 ```
 
-Remove: `Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$false`
+Remove either task with `Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$false` or `Unregister-ScheduledTask -TaskName "MCX-Crude-Alerter" -Confirm:$false`.
 
 ## 5. Data sources (and why two of them)
 
