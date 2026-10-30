@@ -73,6 +73,8 @@ jobs:
           # Toggle strategies from repo Settings > Secrets and variables >
           # Actions > Variables: STRATEGY = qqe | ema20 | both (default qqe)
           STRATEGY: ${{ vars.STRATEGY || 'qqe' }}
+          PREP_EMA_BUFFER_PCT: ${{ vars.PREP_EMA_BUFFER_PCT || '0.02' }}
+          PREP_QQE_BUFFER: ${{ vars.PREP_QQE_BUFFER || '1.0' }}
           # Watch list (entry: SYM[~strategy][@HH:MM-HH:MM alert window][>proxy]):
           SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!~qqe,NIFTY1!~both,MCX:CRUDEOIL~qqe@17:00-22:00,MCX:CRUDEOIL~both@17:00-22:00' }}
           # 2026 NSE/BSE exchange holidays (repo Variable HOLIDAYS overrides):

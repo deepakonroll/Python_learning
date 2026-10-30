@@ -98,7 +98,7 @@ def test_prep_flip_ema20_pending_up_when_live_crosses():
     candles = make_candles([100.0] * 40 + [99.5] * 20)   # completed side DOWN
     level = f"{ema(candles['Close'], 20).iloc[-1]:,.2f}"
     assert prep_flip(candles, 100.4, "DOWN", "ema20", ema_len=20) \
-        == ("UP", f"live 100.40 > EMA20 {level}")
+        == ("UP", f"live 100.40 > EMA20 {level} + 0.02% buffer")
     # same live price but still on the current side -> not a flip
     assert prep_flip(candles, 100.4, "UP", "ema20", ema_len=20) is None
     # live still below the EMA -> nothing pending
@@ -112,11 +112,36 @@ def test_prep_flip_both_requires_engines_to_agree():
     got = prep_flip(candles, 100.2, "DOWN", "both", ema_len=20,
                     rsi_period=14, sf=5, factor=4.238)
     assert got is not None and got[0] == "UP"
-    assert "live 100.20 > EMA20" in got[1] and "QQE trailing" in got[1]
+    assert "live 100.20 > EMA20" in got[1] and "QQE gap" in got[1]
     # live still below the EMA -> EMA engine has nothing pending, so the
     # consensus preview must NOT fire (both engines must agree)
     assert prep_flip(candles, 99.5, "DOWN", "both", ema_len=20,
                      rsi_period=14, sf=5, factor=4.238) is None
+
+
+def test_ema_prep_requires_configured_clearance():
+    candles = make_candles([100.0] * 40 + [99.5] * 20)
+    level = float(ema(candles["Close"], 20).iloc[-1])
+    assert prep_flip(candles, level + 0.01, "DOWN", "ema20") is None
+    got = prep_flip(candles, level * 1.0003, "DOWN", "ema20")
+    assert got is not None and got[0] == "UP"
+    assert "+ 0.02% buffer" in got[1]
+
+
+def test_qqe_prep_requires_gap_buffer(monkeypatch):
+    import nse_alerts.signals as signals
+
+    candles = make_candles([100.0] * 40)
+    monkeypatch.setattr(signals, "qqe_side",
+                        lambda *args: pd.Series([-1, 1]))
+    lines = {"FastAtrRsiTL": pd.Series([50.0]),
+             "RSIndex": pd.Series([50.5])}
+    monkeypatch.setattr(signals, "qqe_lines", lambda *args: pd.DataFrame(lines))
+    assert prep_flip(candles, 100.0, "DOWN", "qqe") is None
+    lines["RSIndex"] = pd.Series([51.5])
+    got = prep_flip(candles, 100.0, "DOWN", "qqe")
+    assert got is not None and got[0] == "UP"
+    assert "QQE gap 1.5 RSI pts (min 1)" in got[1]
 
 
 def test_prep_flip_message_mentions_pending_and_confirmation_rule():

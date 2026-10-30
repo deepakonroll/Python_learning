@@ -48,7 +48,8 @@ class CrossEvent:
     rule: str = ""       # human-readable condition line
 
     def message(self, now: datetime | None = None,
-                interval_minutes: int = 5) -> str:
+                interval_minutes: int = 5,
+                prep_confirmed: bool = False) -> str:
         arrow = "UP->DOWN" if self.side == "SELL" else "DOWN->UP"
         label = STRATEGY_LABELS.get(self.strategy, self.strategy)
         rule = self.rule or (
@@ -63,9 +64,10 @@ class CrossEvent:
             footer += (f"\n⏱️ bar closed {close_t:%H:%M} · "
                        f"{'just closed' if lag == 0 else f'{lag} bar(s) late'}"
                        f" · sent {naive:%H:%M}")
+        confirmed = " · pre-flip confirmed" if prep_confirmed else ""
         return (
             f"{'SELL' if self.side == 'SELL' else 'BUY'} {self.symbol} "
-            f"({arrow}) · {label}\n"
+            f"({arrow}) · {label}{confirmed}\n"
             f"{rule}\n"
             f"{footer}"
         )
@@ -73,7 +75,9 @@ class CrossEvent:
 
 def prep_flip(candles: pd.DataFrame, live_close: float, side: str,
               strategy: str, *, ema_len: int = 20, rsi_period: int = 14,
-              sf: int = 5, factor: float = 4.238) -> tuple[str, str] | None:
+              sf: int = 5, factor: float = 4.238,
+              ema_buffer_pct: float = 0.02,
+              qqe_buffer: float = 1.0) -> tuple[str, str] | None:
     """Forming-bar heads-up for the non-envelope engines.
 
     ('UP' | 'DOWN', detail) when the LIVE bar would flip `side` if it closed
@@ -84,10 +88,13 @@ def prep_flip(candles: pd.DataFrame, live_close: float, side: str,
     closes = candles["Close"].astype(float).reset_index(drop=True)
     if strategy == "ema20":
         level = float(ema(closes, ema_len).iloc[-1])
-        if side == "DOWN" and live_close > level:
-            return "UP", f"live {live_close:,.2f} > EMA{ema_len} {level:,.2f}"
-        if side == "UP" and live_close < level:
-            return "DOWN", f"live {live_close:,.2f} < EMA{ema_len} {level:,.2f}"
+        buffer = abs(level) * ema_buffer_pct / 100.0
+        if side == "DOWN" and live_close > level + buffer:
+            return "UP", (f"live {live_close:,.2f} > EMA{ema_len} "
+                           f"{level:,.2f} + {ema_buffer_pct:g}% buffer")
+        if side == "UP" and live_close < level - buffer:
+            return "DOWN", (f"live {live_close:,.2f} < EMA{ema_len} "
+                             f"{level:,.2f} - {ema_buffer_pct:g}% buffer")
         return None
     if strategy == "qqe":
         hyp = pd.concat([closes, pd.Series([float(live_close)])],
@@ -101,16 +108,21 @@ def prep_flip(candles: pd.DataFrame, live_close: float, side: str,
         lines = qqe_lines(hyp, rsi_period, sf, factor)
         trail = float(lines["FastAtrRsiTL"].iloc[-1])
         rsi = float(lines["RSIndex"].iloc[-1])
+        gap = rsi - trail if new == "UP" else trail - rsi
+        if gap < qqe_buffer:
+            return None
         op = "<" if new == "UP" else ">"
-        return new, (f"QQE trailing {trail:.1f} {op} RSI-ma {rsi:.1f} "
+        return new, (f"QQE gap {gap:.1f} RSI pts (min {qqe_buffer:g}) | "
+                     f"trailing {trail:.1f} {op} RSI-ma {rsi:.1f} "
                      f"(live {live_close:,.2f})")
     if strategy == "both":
         em = prep_flip(candles, live_close, side, "ema20",
-                       ema_len=ema_len)
+                       ema_len=ema_len, ema_buffer_pct=ema_buffer_pct)
         if em is None:
             return None
         qq = prep_flip(candles, live_close, side, "qqe",
-                       rsi_period=rsi_period, sf=sf, factor=factor)
+                       rsi_period=rsi_period, sf=sf, factor=factor,
+                       qqe_buffer=qqe_buffer)
         if qq is None or qq[0] != em[0]:
             return None
         return em[0], f"{em[1]} | {qq[1]}"

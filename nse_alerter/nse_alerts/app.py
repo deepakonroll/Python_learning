@@ -237,22 +237,35 @@ def _run_single(cfg, store, states, watch, strats, candles, source,
             if not dry_run:
                 new_day = stored is None or stored.last_seen_date != today
                 prep_fired = stored.prep_fired if stored else False
+                prep_bar = stored.prep_bar if stored else ""
                 if cfg.prep_alerts:
-                    prep_fired = _prep_alert(
-                        cfg, watch.key, candles, forming, current_side,
-                        prep_fired, source, strategy=strat)
+                    forming_bar = (forming.index[-1].isoformat()
+                                   if forming is not None else "")
+                    if forming_bar and prep_bar == forming_bar:
+                        # A threshold recross within the same live candle is
+                        # still one event, even if the pending state flickered.
+                        prep_fired = True
+                    else:
+                        was_fired = prep_fired
+                        prep_fired = _prep_alert(
+                            cfg, watch.key, candles, forming, current_side,
+                            prep_fired, source, strategy=strat)
+                        if prep_fired and not was_fired and forming_bar:
+                            prep_bar = forming_bar
                 store.put(key, SymbolState(
                     last_side=current_side, last_processed_bar=bar_iso,
                     last_event_side=stored.last_event_side if stored else "",
                     last_event_bar=stored.last_event_bar if stored else "",
                     history=stored.history if stored else [],
-                    last_seen_date=today, prep_fired=prep_fired))
+                    last_seen_date=today, prep_fired=prep_fired,
+                    prep_bar=prep_bar))
                 if new_day and index == 0:
                     _heartbeat(cfg, current_side, bar_iso, source,
                                strats[0], watch.key)
             continue
-        text = event.message(now=now,
-                             interval_minutes=INTERVAL_MINUTES[cfg.interval])
+        text = event.message(
+            now=now, interval_minutes=INTERVAL_MINUTES[cfg.interval],
+            prep_confirmed=bool(stored and stored.prep_fired))
         if dry_run:
             log.info("[dry-run] would send:\n%s", text)
             continue
@@ -268,6 +281,8 @@ def _run_single(cfg, store, states, watch, strats, candles, source,
         state.last_processed_bar = bar_iso
         state.last_seen_date = today
         state.record_event(event.side, event.bar_time.isoformat())
+        state.prep_fired = False
+        state.prep_bar = ""
         store.put(key, state)
         log.info("sent %s alert [%s] for %s (bar %s)",
                  event.side, strat, watch.key,
@@ -321,7 +336,8 @@ def _run_consensus(cfg, store, states, watch, strats, candles, source,
                 last_event_bar=(stored.last_event_bar if stored else ""),
                 history=(stored.history if stored else []),
                 last_seen_date=today,
-                prep_fired=(stored.prep_fired if stored else False)))
+                prep_fired=(stored.prep_fired if stored else False),
+                prep_bar=(stored.prep_bar if stored else "")))
             if stored is None:
                 log.info("baseline: %s [%s] side=%s (no alert on first run)",
                          key, strat, current_side)
@@ -389,34 +405,45 @@ def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
         # closed right now, send a one-per-episode PENDING alert first (same
         # idea as the single-engine prep). Re-arms when the pending flip
         # disappears; a real flip clears it too.
-        prep_fired = False
+        prep_fired = (consensus_stored.prep_fired
+                      if consensus_stored else False)
+        prep_bar = consensus_stored.prep_bar if consensus_stored else ""
         if consensus_event is None and cfg.prep_alerts and forming is not None \
                 and consensus_prev is not None:
+            forming_bar = forming.index[-1].isoformat()
             live = float(forming["Close"].iloc[-1])
-            pending = prep_flip(candles, live, consensus_prev, "both",
-                                ema_len=cfg.ema_len,
-                                rsi_period=cfg.qqe_rsi_period,
-                                sf=cfg.qqe_sf, factor=cfg.qqe_factor)
-            if pending is None:
-                prep_fired = False
-            elif not (consensus_stored.prep_fired if consensus_stored else False):
-                direction, detail = pending
-                text = prep_flip_message(
-                    watch.key, direction, live, detail,
-                    forming.index[-1].to_pydatetime(), source,
-                    consensus_prev, "both")
-                try:
-                    assert cfg.telegram_token and cfg.telegram_chat_id
-                    send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
-                except NotifyError as exc:
-                    log.warning("consensus prep alert failed for %s (%s) - "
-                                "will retry", watch.key, exc)
-                except AssertionError:
-                    pass
-                else:
-                    prep_fired = True
-                    log.info("consensus prep alert sent for %s (%s live %.2f)",
-                             watch.key, direction, live)
+            if prep_bar == forming_bar:
+                # Ignore a same-candle recross after its preview was sent.
+                prep_fired = True
+            else:
+                pending = prep_flip(
+                    candles, live, consensus_prev, "both",
+                    ema_len=cfg.ema_len,
+                    rsi_period=cfg.qqe_rsi_period,
+                    sf=cfg.qqe_sf, factor=cfg.qqe_factor,
+                    ema_buffer_pct=cfg.prep_ema_buffer_pct,
+                    qqe_buffer=cfg.prep_qqe_buffer)
+                if pending is None:
+                    prep_fired = False
+                elif not prep_fired:
+                    direction, detail = pending
+                    text = prep_flip_message(
+                        watch.key, direction, live, detail,
+                        forming.index[-1].to_pydatetime(), source,
+                        consensus_prev, "both")
+                    try:
+                        assert cfg.telegram_token and cfg.telegram_chat_id
+                        send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
+                    except NotifyError as exc:
+                        log.warning("consensus prep alert failed for %s (%s) - "
+                                    "will retry", watch.key, exc)
+                    except AssertionError:
+                        pass
+                    else:
+                        prep_fired = True
+                        prep_bar = forming_bar
+                        log.info("consensus prep alert sent for %s (%s live %.2f)",
+                                 watch.key, direction, live)
         # Don't advance the consensus state before a confirmed alert is sent.
         # A failed send must leave the old consensus side in place for retry.
         if consensus_event is None and consensus_cur is not None:
@@ -427,13 +454,15 @@ def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
                 last_event_bar=(consensus_stored.last_event_bar
                                 if consensus_stored else ""),
                 history=(consensus_stored.history if consensus_stored else []),
-                last_seen_date=today, prep_fired=prep_fired))
+                last_seen_date=today, prep_fired=prep_fired,
+                prep_bar=prep_bar))
             if new_day:
                 _heartbeat(cfg, consensus_cur, bar_iso, source, "both", watch.key)
 
     if consensus_event is not None:
         text = consensus_event.message(
-            now=now, interval_minutes=INTERVAL_MINUTES[cfg.interval])
+            now=now, interval_minutes=INTERVAL_MINUTES[cfg.interval],
+            prep_confirmed=bool(consensus_stored and consensus_stored.prep_fired))
         if dry_run:
             log.info("[dry-run] would send:\n%s", text)
         else:
@@ -450,6 +479,7 @@ def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
             cs.last_processed_bar = bar_iso
             cs.last_seen_date = today
             cs.prep_fired = False
+            cs.prep_bar = ""
             cs.record_event(consensus_event.side,
                             consensus_event.bar_time.isoformat())
             store.put(both_key, cs)
@@ -657,7 +687,9 @@ def _prep_alert(cfg: Config, key: str, candles, forming, current_side: str,
         # ema20 / qqe / both: same contract, generic rule from signals.prep_flip
         got = prep_flip(candles, live, current_side, strategy,
                         ema_len=cfg.ema_len, rsi_period=cfg.qqe_rsi_period,
-                        sf=cfg.qqe_sf, factor=cfg.qqe_factor)
+                        sf=cfg.qqe_sf, factor=cfg.qqe_factor,
+                        ema_buffer_pct=cfg.prep_ema_buffer_pct,
+                        qqe_buffer=cfg.prep_qqe_buffer)
         if got is None:
             return False                     # no pending flip right now
         direction, detail = got

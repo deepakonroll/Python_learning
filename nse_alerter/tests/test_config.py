@@ -11,7 +11,8 @@ def _load(monkeypatch, **env):
     monkeypatch.setattr(config_mod, "load_dotenv", lambda *a, **k: None)
     for key in ("STRATEGY", "QQE_RSI_PERIOD", "QQE_SF", "QQE_FACTOR", "SYMBOLS",
                 "ENVELOPE_LEN", "ENVELOPE_PERCENT", "ENVELOPE_EXPONENTIAL",
-                "PREP_ALERTS", "HOLIDAYS"):
+                "PREP_ALERTS", "PREP_EMA_BUFFER_PCT", "PREP_QQE_BUFFER",
+                "HOLIDAYS"):
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -22,6 +23,15 @@ def test_default_strategy_is_qqe(monkeypatch):
     cfg = _load(monkeypatch)
     assert cfg.strategy == "qqe"
     assert cfg.active_strategies() == ["qqe"]
+
+
+def test_prep_buffers_have_small_defaults_and_can_be_tuned(monkeypatch):
+    cfg = _load(monkeypatch)
+    assert cfg.prep_ema_buffer_pct == 0.02
+    assert cfg.prep_qqe_buffer == 1.0
+    cfg = _load(monkeypatch, PREP_EMA_BUFFER_PCT="0.05", PREP_QQE_BUFFER="1.5")
+    assert cfg.prep_ema_buffer_pct == 0.05
+    assert cfg.prep_qqe_buffer == 1.5
     assert (cfg.qqe_rsi_period, cfg.qqe_sf, cfg.qqe_factor) == (14, 5, 4.238)
 
 

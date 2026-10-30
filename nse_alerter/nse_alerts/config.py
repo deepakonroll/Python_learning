@@ -191,6 +191,8 @@ class Config:
     log_file: Path | None
     prep_alerts: bool = True     # envelope pre-flip heads-up (PREP_ALERTS=false)
     freshness_guard: bool = True  # skip runs whose feed is lagging (FRESHNESS_GUARD)
+    prep_ema_buffer_pct: float = 0.02  # extra distance beyond EMA for a preview
+    prep_qqe_buffer: float = 1.0       # minimum RSI-scale gap for a QQE preview
 
     def active_strategies(self) -> list[str]:
         """Which engines run this pass, primary first (heartbeat uses [0])."""
@@ -307,4 +309,6 @@ def load_config() -> Config:
         log_file=Path(log_file) if log_file else None,
         prep_alerts=_env_bool("PREP_ALERTS", True),
         freshness_guard=_env_bool("FRESHNESS_GUARD", True),
+        prep_ema_buffer_pct=_env_float("PREP_EMA_BUFFER_PCT", 0.02),
+        prep_qqe_buffer=_env_float("PREP_QQE_BUFFER", 1.0),
     )

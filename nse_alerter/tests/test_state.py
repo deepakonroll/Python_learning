@@ -54,6 +54,9 @@ def test_prep_fired_defaults_false_and_round_trips(tmp_path):
     state = StateStore(path).get("NIFTY1!")
     assert state is not None and state.prep_fired is False   # legacy entry
     state.prep_fired = True
+    state.prep_bar = "2026-09-28T13:30:00"
     StateStore(path).put("NIFTY1!", state)
-    assert StateStore(path).get("NIFTY1!").prep_fired is True
+    loaded = StateStore(path).get("NIFTY1!")
+    assert loaded.prep_fired is True
+    assert loaded.prep_bar == "2026-09-28T13:30:00"
 

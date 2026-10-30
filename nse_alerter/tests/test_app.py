@@ -114,6 +114,26 @@ def test_cross_sends_exactly_once_then_dedupes(rig):
     assert state.last_event_side == "BUY"
 
 
+def test_confirmed_flip_marks_the_earlier_prep(rig):
+    from dataclasses import replace
+
+    cfg, provider, sent = rig
+    cfg = replace(cfg, strategy="ema20")
+    provider.df = make_candles([100.0] * 10 + [99.5] * 42)
+    assert app.run(cfg) == 0
+    state = StateStore(cfg.state_file).get(cfg.symbol)
+    state.prep_fired = True
+    state.prep_bar = "2026-09-28T13:30:00"
+    StateStore(cfg.state_file).put(cfg.symbol, state)
+
+    provider.df = make_candles([100.0] * 10 + [99.5] * 30 + [100.7] * 12)
+    assert app.run(cfg) == 0
+    flip = next(text for _, _, text in sent.messages if text.startswith("BUY "))
+    assert "EMA20 cross · pre-flip confirmed" in flip
+    state = StateStore(cfg.state_file).get(cfg.symbol)
+    assert state.prep_fired is False and state.prep_bar == ""
+
+
 def test_dry_run_never_sends_or_writes_state(rig):
     cfg, provider, sent = rig
     assert app.run(cfg) == 0                             # baseline (heartbeat sent)
@@ -1171,13 +1191,15 @@ def test_prep_alert_fires_once_rearms_without_touching_side(rig):
              if not t.startswith(("⚔️", "🔴"))]
     assert len(texts) == 2                          # still just prep + heartbeat
 
-    provider.df = _prep_frame(completed_close=85.75)   # close back inside band
-    assert app.run(cfg) == 0                        # re-arms AND preps again
+    provider.df = _prep_frame(completed_close=85.75)   # flicker inside same candle
+    assert app.run(cfg) == 0                        # no second heads-up this candle
     texts = [t for _, _, t in sent.messages
              if not t.startswith(("⚔️", "🔴"))]
     preps = [t for t in texts if t.startswith("⚠️")]
-    assert len(preps) == 2                          # one per approach episode
-    assert StateStore(cfg.state_file).get("NIFTY1!#env").prep_fired is True
+    assert len(preps) == 1
+    state = StateStore(cfg.state_file).get("NIFTY1!#env")
+    assert state.prep_fired is True
+    assert state.prep_bar == "2026-09-28T13:30:00"
 
     before = len(sent.messages)
     assert app.run(cfg, dry_run=True) == 0          # dry: no sends at all
@@ -1247,13 +1269,13 @@ def test_ema20_prep_fires_via_run_and_rearms(rig):
     provider.df = _prep_frame(completed_close=None, live=85.0)  # below EMA20
     assert app.run(cfg) == 0
     assert len([t for _, _, t in sent.messages
-                if t.startswith("⚠️")]) == 1            # no send: re-armed only
-    assert StateStore(cfg.state_file).get(cfg.symbol).prep_fired is False
+                if t.startswith("⚠️")]) == 1            # same candle: no repeat
+    assert StateStore(cfg.state_file).get(cfg.symbol).prep_fired is True
 
     provider.df = _prep_frame(completed_close=None, live=110.0)  # re-approach
     assert app.run(cfg) == 0
     assert len([t for _, _, t in sent.messages
-                if t.startswith("⚠️")]) == 2            # armed again -> warns
+                if t.startswith("⚠️")]) == 1            # recross in same candle stays quiet
     assert StateStore(cfg.state_file).get(cfg.symbol).prep_fired is True
 
 

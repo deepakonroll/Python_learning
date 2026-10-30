@@ -165,8 +165,12 @@ python main.py --verbose                 # debug logging
   bar's close. The GitHub schedule runs **+2 min offset** from the bar
   boundaries, so each tick lands inside a *forming* bar: `PREP_ALERTS=true`
   sends a **`⚠️ … flip PENDING`** heads-up for **ema20 / qqe / both** (not just
-  env) while the live bar is crossing, before the full-bar confirmation. Every
-  confirmed alert is stamped with its own age (`⏱️ bar closed 10:10 · 2 bar(s)
+  env) only after price clears a small buffer (defaults: EMA 0.02%, QQE 1 RSI
+  point). Set `PREP_EMA_BUFFER_PCT` or `PREP_QQE_BUFFER` in local `.env` or as
+  GitHub Actions variables to tune them. A forming candle can send at most one
+  pre-flip, even if its live value flickers across the threshold; the completed
+  alert adds `pre-flip confirmed` when it follows a heads-up. Every confirmed
+  alert is stamped with its own age (`⏱️ bar closed 10:10 · 2 bar(s)
   late · sent 10:20`) so a slow pipeline never looks fresh.
 - Exit codes: `0` ok/no-op · `1` config (e.g. missing Telegram creds) ·
   `2` Telegram failed (state not saved → auto-retry next minute) · `3` data failed.
