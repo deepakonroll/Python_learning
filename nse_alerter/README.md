@@ -171,6 +171,9 @@ python main.py --verbose                 # debug logging
 - Exit codes: `0` ok/no-op · `1` config (e.g. missing Telegram creds) ·
   `2` Telegram failed (state not saved → auto-retry next minute) · `3` data failed.
 - Logs: console + `nse_alerter.log` (Task Scheduler has no console).
+- GitHub Actions also keeps one verbose `daily.log` across scheduled runs and
+  uploads it after the 23:45 IST safety run as the `nse-alerts-log-YYYY-MM-DD`
+  artifact (Actions → `nse-alerts-safety` → final run → Artifacts; retained 30 days).
 
 ### Control it from your phone (Telegram commands)
 

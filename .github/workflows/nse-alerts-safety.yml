@@ -31,6 +31,17 @@ jobs:
           cache: pip
           cache-dependency-path: nse_alerter/requirements-cloud.txt
 
+      # Restore and append to the same India-date log used by nse-alerts.yml.
+      - name: Resolve India trading date
+        id: log_date
+        run: echo "ist_date=$(TZ=Asia/Kolkata date +%F)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: nse_alerter/daily.log
+          key: nse-log-${{ steps.log_date.outputs.ist_date }}-${{ github.run_id }}
+          restore-keys: nse-log-${{ steps.log_date.outputs.ist_date }}-
+
       - uses: actions/cache@v4
         with:
           path: nse_alerter/state.json
@@ -42,7 +53,7 @@ jobs:
         run: pip install -r nse_alerter/requirements-cloud.txt
 
       - name: Evaluate signal and notify
-        run: python nse_alerter/main.py --verbose
+        run: python nse_alerter/main.py --verbose 2>&1 | tee -a nse_alerter/daily.log
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -54,3 +65,13 @@ jobs:
           STRATEGY: ${{ vars.STRATEGY || 'qqe' }}
           SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!~qqe,NIFTY1!~both,MCX:CRUDEOIL~qqe@17:00-22:00,MCX:CRUDEOIL~both@17:00-22:00' }}
           HOLIDAYS: ${{ vars.HOLIDAYS || '2026-01-15,2026-01-26,2026-03-03,2026-03-26,2026-03-31,2026-04-03,2026-04-14,2026-05-01,2026-05-28,2026-06-26,2026-09-14,2026-10-02,2026-10-20,2026-11-10,2026-11-24,2026-12-25' }}
+
+      # This final weekday safety run is at 23:45 IST; publish one log for the day.
+      - name: Upload daily trading log
+        if: always() && github.event_name == 'schedule' && github.event.schedule == '15 3-18 * * 1-5'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nse-alerts-log-${{ steps.log_date.outputs.ist_date }}
+          path: nse_alerter/daily.log
+          if-no-files-found: error
+          retention-days: 30

@@ -36,6 +36,17 @@ jobs:
           cache: pip
           cache-dependency-path: nse_alerter/requirements-cloud.txt
 
+      # Daily logs must survive the short-lived GitHub runner between ticks.
+      - name: Resolve India trading date
+        id: log_date
+        run: echo "ist_date=$(TZ=Asia/Kolkata date +%F)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: nse_alerter/daily.log
+          key: nse-log-${{ steps.log_date.outputs.ist_date }}-${{ github.run_id }}
+          restore-keys: nse-log-${{ steps.log_date.outputs.ist_date }}-
+
       # Dedupe state survives across runs (restore latest, save fresh each time).
       # A cache miss is self-healing: the app records a silent baseline instead
       # of double-alerting (worst case: one cross during the gap is skipped).
@@ -50,7 +61,7 @@ jobs:
         run: pip install -r nse_alerter/requirements-cloud.txt
 
       - name: Evaluate signal and notify
-        run: python nse_alerter/main.py --verbose
+        run: python nse_alerter/main.py --verbose 2>&1 | tee -a nse_alerter/daily.log
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
