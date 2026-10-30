@@ -182,6 +182,39 @@ def test_replay_reports_crosses_without_sending_or_writing(rig):
     assert not cfg.state_file.exists()                   # replay never writes state
 
 
+def test_replay_obeys_custom_watch_window_and_first_scan_bar(rig):
+    from dataclasses import replace
+    import pandas as pd
+
+    from nse_alerts.config import Watch
+    from nse_alerts.market_hours import parse_time_window
+    from tests.conftest import falling, make_candles
+
+    cfg, provider, sent = rig
+    watch = Watch(key="MCX:CRUDEOIL", label="CRUDEOIL", exchange="MCX",
+                  tv_symbol="MCX:CRUDEOIL", yahoo_symbol="BZ=F",
+                  strategy="ema20", session=parse_time_window("17:00-18:00"))
+    cfg = replace(cfg, watches=(watch,), strategy="ema20")
+
+    prior = make_candles(falling(108, start=200, step=0.2),
+                         start="2026-09-28 09:00")
+    target_closes = (
+        [100.0 - 0.5 * i for i in range(20)]
+        + [90.0 + 4.0 * i for i in range(30)]
+        + [210.0 - 4.0 * i for i in range(20)]
+        + [130.0 + 5.0 * i for i in range(38)]
+    )
+    target = make_candles(target_closes, start="2026-09-29 09:00")
+    provider.df = pd.concat([prior, target])
+
+    events = app.replay(cfg, __import__("datetime").date(2026, 9, 29))
+
+    assert [(event.side, event.bar_time.strftime("%H:%M")) for event in events] \
+        == [("BUY", "16:55")]
+    assert sent.messages == []
+    assert not cfg.state_file.exists()
+
+
 def test_replay_on_day_without_bars_returns_empty(rig):
     import datetime as dt
 
@@ -403,6 +436,64 @@ def test_both_consensus_no_alert_when_engines_disagree(rig, monkeypatch):
     assert after_count == before_count  # no new alert on disagreement
     states = StateStore(cfg.state_file).load()
     assert states["MCX:CRUDEOIL#both"].last_side == "UP"  # consensus unchanged
+
+
+def test_consensus_send_failure_does_not_advance_state(rig, monkeypatch):
+    from nse_alerts.notify import NotifyError
+    from nse_alerts.state import SymbolState
+
+    cfg, provider, _ = rig
+    watch = cfg.watches[0]
+    store = StateStore(cfg.state_file)
+    previous = SymbolState(last_side="UP",
+                           last_processed_bar="2026-09-28T11:15:00",
+                           last_seen_date="2026-09-28")
+    store.put("NIFTY1!#both", previous)
+    provider.df = make_candles(falling(26))
+
+    def fail_send(*args, **kwargs):
+        raise NotifyError("temporary Telegram failure")
+
+    monkeypatch.setattr(app, "send_telegram", fail_send)
+    with pytest.raises(app._RetrySignal):
+        app._consensus_decide(
+            watch, ["ema20", "qqe"],
+            {"ema20": "DOWN", "qqe": "DOWN"},
+            {"ema20": None, "qqe": None}, provider.df, "fake",
+            provider.df.index[-1].isoformat(), "2026-09-28", False,
+            store, {}, cfg, previous, "UP", "NIFTY1!#both", True,
+            now=MONDAY, forming=None)
+
+    persisted = store.get("NIFTY1!#both")
+    assert persisted is not None
+    assert persisted.last_side == "UP"
+    assert persisted.last_processed_bar == "2026-09-28T11:15:00"
+    assert persisted.last_event_side == ""
+
+
+def test_consensus_waits_for_first_agreement_instead_of_guessing_up(rig):
+    cfg, provider, sent = rig
+    watch = cfg.watches[0]
+    store = StateStore(cfg.state_file)
+    provider.df = make_candles(falling(26))
+    bar_iso = provider.df.index[-1].isoformat()
+
+    app._consensus_decide(
+        watch, ["ema20", "qqe"], {"ema20": "DOWN", "qqe": "UP"},
+        {"ema20": None, "qqe": None}, provider.df, "fake", bar_iso,
+        "2026-09-28", False, store, {}, cfg, None, None,
+        "NIFTY1!#both", True, now=MONDAY, forming=None)
+    assert store.get("NIFTY1!#both") is None
+
+    app._consensus_decide(
+        watch, ["ema20", "qqe"], {"ema20": "DOWN", "qqe": "DOWN"},
+        {"ema20": None, "qqe": None}, provider.df, "fake", bar_iso,
+        "2026-09-28", False, store, {}, cfg, None, None,
+        "NIFTY1!#both", True, now=MONDAY, forming=None)
+    baseline = store.get("NIFTY1!#both")
+    assert baseline is not None and baseline.last_side == "DOWN"
+    assert not [text for _, _, text in sent.messages
+                if text.startswith(("BUY NIFTY1!", "SELL NIFTY1!"))]
 
 
 def test_both_consensus_alert_when_both_engines_flip_same_direction(rig, monkeypatch):

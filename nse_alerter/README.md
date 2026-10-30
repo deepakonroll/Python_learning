@@ -113,8 +113,8 @@ If you see `{"ok":true,"result":[]}` you haven't pressed START on your bot yet.
 ```powershell
 python main.py --dry-run                # evaluate + print, sends nothing, state untouched
 python main.py                          # the real run (no-op outside NSE hours)
-python main.py --replay 2026-09-25      # walk a past session bar-by-bar: every cross
-                                         # that WOULD have fired (no sends, no state)
+python main.py --replay 2026-09-25      # replay watch window + first scan bar
+                                         # (no sends, no state)
 python main.py --verbose                 # debug logging
 ```
 

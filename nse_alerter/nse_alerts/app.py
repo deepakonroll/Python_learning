@@ -372,9 +372,14 @@ def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
             log.info("no consensus flip - %s side=%s bar=%s",
                      both_key, consensus_cur, bar_iso)
     else:
-        consensus_cur = consensus_prev or "UP"
+        consensus_cur = consensus_prev
         diag = ", ".join(f"{s}={engine_sides[s]}" for s in strats)
-        log.info("engines disagree for %s (%s) - no alert", watch.key, diag)
+        if consensus_cur is None:
+            log.info("engines disagree for %s (%s) - waiting for first agreement",
+                     watch.key, diag)
+        else:
+            log.info("engines disagree for %s (%s) - consensus stays %s",
+                     watch.key, diag, consensus_cur)
 
     if not dry_run:
         new_day = (consensus_stored is None
@@ -412,19 +417,19 @@ def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
                     prep_fired = True
                     log.info("consensus prep alert sent for %s (%s live %.2f)",
                              watch.key, direction, live)
-        store.put(both_key, SymbolState(
-            last_side=consensus_cur, last_processed_bar=bar_iso,
-            last_event_side=(
-                (consensus_stored.last_event_side if consensus_stored else "")
-                if consensus_event is None else consensus_event.side),
-            last_event_bar=(
-                (consensus_stored.last_event_bar if consensus_stored else "")
-                if consensus_event is None
-                else consensus_event.bar_time.isoformat()),
-            history=(consensus_stored.history if consensus_stored else []),
-            last_seen_date=today, prep_fired=prep_fired))
-        if new_day:
-            _heartbeat(cfg, consensus_cur, bar_iso, source, "both", watch.key)
+        # Don't advance the consensus state before a confirmed alert is sent.
+        # A failed send must leave the old consensus side in place for retry.
+        if consensus_event is None and consensus_cur is not None:
+            store.put(both_key, SymbolState(
+                last_side=consensus_cur, last_processed_bar=bar_iso,
+                last_event_side=(consensus_stored.last_event_side
+                                 if consensus_stored else ""),
+                last_event_bar=(consensus_stored.last_event_bar
+                                if consensus_stored else ""),
+                history=(consensus_stored.history if consensus_stored else []),
+                last_seen_date=today, prep_fired=prep_fired))
+            if new_day:
+                _heartbeat(cfg, consensus_cur, bar_iso, source, "both", watch.key)
 
     if consensus_event is not None:
         text = consensus_event.message(
@@ -439,14 +444,17 @@ def _consensus_decide(watch, strats, engine_sides, engine_events, candles,
                 log.error("telegram send failed (%s, will retry): %s",
                           watch.key, exc)
                 raise _RetrySignal()
-            if not dry_run:
-                cs = consensus_stored or SymbolState(last_side=consensus_cur)
-                cs.last_side = consensus_cur
-                cs.last_processed_bar = bar_iso
-                cs.last_seen_date = today
-                cs.record_event(consensus_event.side,
-                                consensus_event.bar_time.isoformat())
-                store.put(both_key, cs)
+            assert consensus_cur is not None
+            cs = consensus_stored or SymbolState(last_side=consensus_cur)
+            cs.last_side = consensus_cur
+            cs.last_processed_bar = bar_iso
+            cs.last_seen_date = today
+            cs.prep_fired = False
+            cs.record_event(consensus_event.side,
+                            consensus_event.bar_time.isoformat())
+            store.put(both_key, cs)
+            if new_day:
+                _heartbeat(cfg, consensus_cur, bar_iso, source, "both", watch.key)
             log.info("sent %s alert [both] for %s (bar %s)",
                      consensus_event.side, watch.key,
                      consensus_event.bar_time.strftime("%H:%M"))
@@ -814,8 +822,9 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
     """Walk one past session bar-by-bar and print every cross that would have
     fired. Sends nothing, writes no state - safe any day, any time.
 
-    Uses the exact same evaluate() path as the live run, so what you see here
-    is what you'd have been alerted on.
+    Uses the same evaluate() path and watch window as the live run. For a
+    windowed watch, the first completed bar before the window is included to
+    model the side the first live scan observes.
     """
     configure_logging(verbose, cfg.log_file)
     watch = cfg.watches[0]
@@ -836,7 +845,28 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
               f"(weekend/holiday or feed gap) - try DATA_PROVIDER=yahoo")
         return []
 
-    pre = candles[candles.index < day_bars.index[0]]
+    session_open, session_close, _ = watch.session or session_bounds(watch.exchange)
+    day_times = day_bars.index.time
+    before_open = day_bars[[bar_time < session_open for bar_time in day_times]].tail(1)
+    in_window = day_bars[[session_open <= bar_time < session_close
+                          for bar_time in day_times]]
+    replay_index = before_open.index.append(in_window.index).sort_values().unique()
+    replay_bars = day_bars.loc[replay_index]
+
+    # Live runs retain the side from the last bar evaluated in the prior
+    # watch window. Ignore later bars outside that window when choosing replay
+    # state, but keep the earlier candles needed to warm up the indicators.
+    prior_bars = candles[candles.index.date < target]
+    prior_times = prior_bars.index.time
+    prior_window = prior_bars[[session_open <= bar_time < session_close
+                               for bar_time in prior_times]]
+    if prior_window.empty:
+        pre = prior_bars
+    else:
+        pre = candles[candles.index <= prior_window.index[-1]]
+
+    replay_positions = [candles.index.get_loc(bar_time)
+                        for bar_time in replay_bars.index]
     # strategy precedence mirrors live: Telegram override > ~suffix > config
     control = StateStore(cfg.state_file).get_control()
     eff = control.get("strategy") or watch.strategy or cfg.strategy
@@ -849,7 +879,8 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
         # Consensus replay: walk both engines bar-by-bar, alert only
         # when ALL engines agree and the agreed direction changes.
         print(f"Replay {watch.key} · {target.isoformat()} · {cfg.interval} "
-              f"both (consensus) · feed={source} · {len(day_bars)} bars that day")
+              f"both (consensus) · feed={source} · {len(replay_bars)} bars "
+              f"evaluated in {session_open:%H:%M}-{session_close:%H:%M} window")
         for strat in strats:
             if strat == "env":
                 min_pre = cfg.envelope_len + 2
@@ -874,9 +905,10 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
             engine_prevs[strat] = entry
             print(f"  {STRATEGY_LABELS.get(strat, strat)} entering side: {entry}")
 
-        consensus_prev: str | None = None
-        pos = len(pre)
-        for i in range(pos, len(candles)):
+        agreed_pre = set(engine_prevs.values())
+        consensus_prev: str | None = (next(iter(agreed_pre))
+                                      if len(agreed_pre) == 1 else None)
+        for i in replay_positions:
             engine_sides: dict[str, str] = {}
             for strat in strats:
                 kwargs = dict(symbol=watch.key, ema_len=cfg.ema_len,
@@ -921,7 +953,8 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
         for strat in strats:
             label = STRATEGY_LABELS.get(strat, strat)
             print(f"Replay {watch.key} · {target.isoformat()} · {cfg.interval} "
-                  f"{label} · feed={source} · {len(day_bars)} bars that day")
+                  f"{label} · feed={source} · {len(replay_bars)} bars "
+                  f"evaluated in {session_open:%H:%M}-{session_close:%H:%M} window")
             if strat == "env":
                 min_pre = cfg.envelope_len + 2
             elif strat == "ema20":
@@ -942,8 +975,8 @@ def replay(cfg: Config, target: date, *, verbose: bool = False) -> list:
             _, entry = evaluate(pre, prev_side=None, **kwargs)
             print(f"entering side: {entry}")
 
-            events, prev, pos = [], entry, len(pre)
-            for i in range(pos, len(candles)):
+            events, prev = [], entry
+            for i in replay_positions:
                 event, prev = evaluate(candles.iloc[:i + 1], prev_side=prev, **kwargs)
                 if event:
                     events.append(event)
