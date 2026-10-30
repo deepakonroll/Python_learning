@@ -235,9 +235,9 @@ Remove: `Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$fa
 |---|---|---|
 | **tv** (default for NSE + crude) | `NSE:NIFTY1!` — actual **NIFTY futures**, continuous front-month (auto-rolls at expiry), real-time for retail users; `NYMEX:BZ1!` continuous **Brent futures** for crude (the same `BZ1!` chart on TradingView) | first choice in `DATA_PROVIDER=auto` for NSE watches **and** for crude (built-in TV override) |
 | **yahoo** (fallback for NSE & crude; **primary for other MCX**) | `^NSEI` spot proxy for NIFTY; `BZ=F` Brent + `NG=F` Henry Hub for crude/natgas | TradingView's unofficial API **rejects MCX symbols for anonymous sessions** (verified), so plain MCX watches go yahoo-first — but crude has a TV override (`NYMEX:BZ1!`, real-time) because `BZ=F` measured **+10 min stale** (2026-10-06: bar 20:55 at 21:09), making TV the lead and BZ=F the fallback. Alerts show `src=` of whichever fired |
-| **kite** (opt-in paid) | your Zerodha account's real front-month futures — **exact MCX INR contracts too** (instrument master cached 6 h; a `-FUT` filter picks the NIFTY/crude/SENSEX front month automatically) | leads every chain when you set `DATA_PROVIDER=kite` + credentials; the free chain stays behind it, so a stale daily token just falls back |
+| **kite** (paid) | your Zerodha account's real front-month futures — **exact MCX INR contracts too** (instrument master cached 6 h; a `-FUT` filter picks the NIFTY/crude/SENSEX front month automatically) | leads when `DATA_PROVIDER=kite`; Yahoo is the only fallback, so an expired token never silently switches to TradingView |
 
-## 6. Zerodha Kite (paid feed — leads the chain, with free-feed insurance)
+## 6. Zerodha Kite (paid feed — Yahoo fallback)
 
 You're on the **paid Kite Connect plan** (₹500 / 30 days) with an app at
 `developers.kite.trade` → *My Apps* (`redirect_url = http://localhost:3000`).
@@ -276,11 +276,10 @@ You're on the **paid Kite Connect plan** (₹500 / 30 days) with an app at
    ~6k-row cap ≈ 3 weeks and yahoo's 60 days), at the same one historical
    call per watch per cron tick.
 
-**Insurance (why you can leave it on):** `DATA_PROVIDER=kite` puts kite
-*first* but keeps the free TradingView/yahoo chain behind it — if the token
-is stale (forgot the morning login, long weekend, credits exhausted), every
-fetch logs `provider kite failed … -> using fallback provider` and the alerts
-keep flying on the free feeds. Nothing goes dark.
+**Fallback behavior:** `DATA_PROVIDER=kite` tries Kite first and Yahoo second.
+If Kite's token is stale or Kite is unavailable, fetch logs identify the
+fallback and alerts use the configured Yahoo proxy (for example `^NSEI` for
+NIFTY and `BZ=F` for crude), not the exact Zerodha contract.
 
 **Credit caveat:** the plan's "500 credits" metering isn't documented
 precisely (check *My Apps* for your balance), and the bot spends ~1 historical
@@ -302,14 +301,16 @@ would last only ~11 days. Secrets stay hidden in Actions Secrets either way.
 Watch list override: repo **Variables → `SYMBOLS`** (e.g. `NIFTY1!` alone),
 else the default `NIFTY1!,MCX:CRUDEOIL,MCX:NATURALGAS`.
 
-**One-time setup — add the 2 secrets** (Settings → Secrets, not in code):
+**Initial setup — add these repository secrets** (Settings → Secrets, not in code):
 
 1. Open: `https://github.com/deepakonroll/Python_learning/settings/secrets/actions`
 2. **New repository secret** → Name `TELEGRAM_BOT_TOKEN`, Value = the token from `.env` → Save
 3. **New repository secret** → Name `TELEGRAM_CHAT_ID`, Value = `674729729` → Save
-4. First test: **Actions → nse-alerts → Run workflow** (manual button) → green check ✓
+4. **New repository secret** → Name `KITE_API_KEY`, Value from your Kite developer app → Save
+5. **New repository secret** → Name `KITE_ACCESS_TOKEN`, Value from this morning's Kite login → Save. Update this secret each trading morning after generating a fresh token; it expires around 06:00 IST the next day.
+6. First test: **Actions → nse-alerts → Run workflow** (manual button) → green check ✓
    (it prints `test`/`baseline`/`no cross` lines in the run log)
-5. From then on the cron does everything — **you can keep the PC off.**
+7. From then on the cron does everything — **you can keep the PC off.**
 
 **Disable the local Windows task once cloud is confirmed** (avoids double alerts
 on days you DO keep the PC on):
@@ -327,9 +328,9 @@ Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$false
 - GitHub **e-mails you if the workflow fails**, and pauses scheduled runs after
   **60 days with zero repo activity** (any push/reactivate fixes it).
 - Check usage anytime: `github.com/deepakonroll/Python_learning/actions`
-- GitHub servers run outside India → TradingView's unofficial feed fails more
-  often there, so alerts more often show `src=yahoo` (spot proxy) — set up Kite
-  (§6) for authoritative futures data if that bothers you.
+- Both Actions workflows use `DATA_PROVIDER=kite`: Kite is tried first, with
+  Yahoo as the only fallback. The Kite access-token secret must be refreshed
+  each trading morning; when it expires, the alert source changes to Yahoo.
 - Same pattern works for **AWS Lambda + EventBridge** (zip the package, env vars
   in configuration, `state.json` in S3) if you ever outgrow Actions.
 

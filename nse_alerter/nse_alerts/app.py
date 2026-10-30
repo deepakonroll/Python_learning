@@ -56,14 +56,15 @@ def build_providers(cfg: Config, watch) -> list[DataProvider]:
             raise ConfigError(f"no yahoo proxy configured for {watch.key}")
         return [YahooProvider()]                             # type: ignore[list-item]
     if cfg.data_provider == "kite":
-        # Kite leads so alerts read the exact front-month contracts, but the
-        # free chain STAYS behind it: the access token dies every trading day,
-        # and a stale one must degrade to TV/yahoo - never darken the alerts.
+        # Kite leads with exact front-month contracts; Yahoo is the only
+        # fallback so alerts never silently switch to TradingView data.
         if not (cfg.kite_api_key and cfg.kite_access_token):
             log.warning("DATA_PROVIDER=kite but KITE_API_KEY/KITE_ACCESS_TOKEN "
                         "not set - kite fetches will fail and fall back")
+        yahoo: list[DataProvider] = ([YahooProvider()]  # type: ignore[list-item]
+                                     if watch.yahoo_symbol else [])
         return [KiteProvider(cfg.kite_api_key, cfg.kite_access_token),  # type: ignore[list-item]
-                *_free_chain(watch)]
+                *yahoo]
     raise ConfigError(f"unknown DATA_PROVIDER {cfg.data_provider!r}")
 
 

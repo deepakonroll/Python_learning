@@ -980,9 +980,8 @@ def test_crude_auto_chain_leads_with_fresh_tv_override(rig):
         == ["tv", "yahoo"]
 
 
-def test_kite_provider_leads_with_free_chain_behind(rig):
-    """DATA_PROVIDER=kite: paid feed first, free TV/yahoo chain still behind
-    it - a stale daily token degrades, it never darkens the alerts."""
+def test_kite_provider_leads_with_yahoo_fallback(rig):
+    """DATA_PROVIDER=kite: paid feed first, Yahoo proxy is the only fallback."""
     from dataclasses import replace
 
     from nse_alerts.config import parse_watches
@@ -993,11 +992,11 @@ def test_kite_provider_leads_with_free_chain_behind(rig):
     crude = parse_watches("MCX:CRUDEOIL~env@17:00-22:00")[0]
     ng = parse_watches("MCX:NATURALGAS")[0]
     assert [p.name for p in real_build_providers(cfg, cfg.watches[0])] \
-        == ["kite", "tv", "yahoo"]
+        == ["kite", "yahoo"]
     assert [p.name for p in real_build_providers(cfg, crude)] \
-        == ["kite", "tv", "yahoo"]
+        == ["kite", "yahoo"]
     assert [p.name for p in real_build_providers(cfg, ng)] \
-        == ["kite", "yahoo", "tv"]
+        == ["kite", "yahoo"]
 
 
 def test_stale_kite_token_falls_back_to_free_provider(rig):
