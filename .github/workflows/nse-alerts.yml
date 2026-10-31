@@ -79,3 +79,26 @@ jobs:
           SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!~qqe,NIFTY1!~both,MCX:CRUDEOIL~qqe@17:00-22:00,MCX:CRUDEOIL~both@17:00-22:00' }}
           # 2026 NSE/BSE exchange holidays (repo Variable HOLIDAYS overrides):
           HOLIDAYS: ${{ vars.HOLIDAYS || '2026-01-15,2026-01-26,2026-03-03,2026-03-26,2026-03-31,2026-04-03,2026-04-14,2026-05-01,2026-05-28,2026-06-26,2026-09-14,2026-10-02,2026-10-20,2026-11-10,2026-11-24,2026-12-25' }}
+
+      - name: Redact credentials from daily log
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          KITE_API_KEY: ${{ secrets.KITE_API_KEY }}
+          KITE_ACCESS_TOKEN: ${{ secrets.KITE_ACCESS_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("nse_alerter/daily.log")
+          if path.exists():
+              text = path.read_text(encoding="utf-8")
+              for name in ("TELEGRAM_BOT_TOKEN", "KITE_API_KEY", "KITE_ACCESS_TOKEN"):
+                  secret = os.environ.get(name, "")
+                  if secret:
+                      text = text.replace(secret, "[REDACTED]")
+              text = re.sub(r"(?i)(/bot)\d{8,}:[A-Za-z0-9_-]{20,}", r"\1[REDACTED]", text)
+              path.write_text(text, encoding="utf-8")
+          PY

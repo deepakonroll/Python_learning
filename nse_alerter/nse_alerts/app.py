@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from datetime import date, datetime, time, timedelta
 
@@ -32,10 +33,30 @@ from .state import StateStore, SymbolState
 log = logging.getLogger("nse_alerts")
 
 
+class _CredentialRedactionFilter(logging.Filter):
+    """Keep credentials out of console and file logs, including HTTP URLs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        for name in ("TELEGRAM_BOT_TOKEN", "KITE_API_KEY", "KITE_ACCESS_TOKEN"):
+            secret = os.environ.get(name, "")
+            if secret:
+                message = message.replace(secret, "[REDACTED]")
+        message = re.sub(
+            r"(?i)(/bot)\d{8,}:[A-Za-z0-9_-]{20,}",
+            r"\1[REDACTED]", message)
+        record.msg = message
+        record.args = ()
+        return True
+
+
 def configure_logging(verbose: bool = False, log_file=None) -> None:
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
     if log_file:
         handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+    redactor = _CredentialRedactionFilter()
+    for handler in handlers:
+        handler.addFilter(redactor)
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(message)s",

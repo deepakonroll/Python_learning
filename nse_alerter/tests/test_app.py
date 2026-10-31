@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from nse_alerts import app
@@ -9,6 +11,17 @@ from nse_alerts.app import build_providers as real_build_providers  # pre-rig re
 from nse_alerts.providers.base import ProviderError
 from nse_alerts.state import StateStore
 from tests.conftest import MONDAY, SATURDAY, falling, make_candles, make_config, rising
+
+
+def test_log_filter_redacts_telegram_bot_token(monkeypatch):
+    token = "12345678:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk"
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", token)
+    record = logging.LogRecord(
+        "urllib3.connectionpool", logging.DEBUG, "test.py", 1,
+        f"GET https://api.telegram.org/bot{token}/getUpdates", (), None)
+    assert app._CredentialRedactionFilter().filter(record)
+    assert token not in record.getMessage()
+    assert "/bot[REDACTED]/getUpdates" in record.getMessage()
 
 
 class FakeProvider:
