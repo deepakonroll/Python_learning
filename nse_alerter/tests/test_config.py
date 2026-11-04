@@ -169,7 +169,7 @@ def test_crude_tv_override_map_and_prep_flag(monkeypatch):
     # series as the BZ1! TradingView chart), applied at fetch time, so
     # parse_watches keeps tv_symbol clean for every other symbol)
     assert TV_SYMBOL_OVERRIDES["MCX:CRUDEOIL"] == "NYMEX:BZ1!"
-    # P1: prep heads-up defaults on; PREP_ALERTS=false switches it off
-    assert _load(monkeypatch).prep_alerts is True
+    # P1: prep heads-up defaults off; PREP_ALERTS=true opts in
+    assert _load(monkeypatch).prep_alerts is False
     assert _load(monkeypatch, PREP_ALERTS="false").prep_alerts is False
     assert _load(monkeypatch, PREP_ALERTS="true").prep_alerts is True

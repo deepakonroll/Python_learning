@@ -64,6 +64,7 @@ jobs:
           KITE_API_KEY: ${{ secrets.KITE_API_KEY }}
           KITE_ACCESS_TOKEN: ${{ secrets.KITE_ACCESS_TOKEN }}
           STRATEGY: ${{ vars.STRATEGY || 'qqe' }}
+          PREP_ALERTS: ${{ vars.PREP_ALERTS || 'false' }}
           PREP_EMA_BUFFER_PCT: ${{ vars.PREP_EMA_BUFFER_PCT || '0.02' }}
           PREP_QQE_BUFFER: ${{ vars.PREP_QQE_BUFFER || '1.0' }}
           SYMBOLS: ${{ vars.SYMBOLS || 'NIFTY1!~qqe,NIFTY1!~both,MCX:CRUDEOIL~qqe@17:00-22:00,MCX:CRUDEOIL~both@17:00-22:00' }}
