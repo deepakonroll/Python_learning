@@ -1172,7 +1172,7 @@ def _env_cfg(rig):
 
     cfg, provider, sent = rig
     return (replace(cfg, strategy="env", envelope_len=5,
-                    envelope_percent=0.3), provider, sent)
+                    envelope_percent=0.3, prep_alerts=True), provider, sent)
 
 
 def _prep_frame(completed_close: float | None = None, live: float = 90.0):
@@ -1261,7 +1261,7 @@ def test_ema20_prep_fires_via_run_and_rearms(rig):
     from dataclasses import replace
 
     cfg, provider, sent = rig
-    cfg = replace(cfg, strategy="ema20")
+    cfg = replace(cfg, strategy="ema20", prep_alerts=True)
     # completed bars fall (side DOWN), live bar at 13:30 pierces above EMA20
     provider.df = _prep_frame(completed_close=None, live=110.0)
     assert app.run(cfg) == 0
