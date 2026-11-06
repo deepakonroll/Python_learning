@@ -368,8 +368,8 @@ def test_both_strategies_baseline_with_single_heartbeat(rig):
 
 def test_default_crude_watch_alerts_qqe_and_ema_without_env(rig, monkeypatch):
     """Default SYMBOLS: NIFTY~qqe, crude~qqe, crude~both.
-    Each crude flip produces TWO alerts: one QQE-only (~qqe watch) and
-    one QQE+EMA20 consensus (~both watch).  Zero env artifacts."""
+    QQE-only stays independent; the combo requires a same-bar EMA20 cross
+    with a matching candle color. Zero env artifacts."""
     from dataclasses import replace
     from datetime import datetime
 
@@ -396,186 +396,164 @@ def test_default_crude_watch_alerts_qqe_and_ema_without_env(rig, monkeypatch):
     assert not [t for _, _, t in sent.messages
                 if t.startswith(("BUY MCX", "SELL MCX")) or "pre-flip" in t]
 
-    # same day: rise THEN crash - both engines flip DOWN, two SELL alerts fire:
-    #   1) QQE-only from the ~qqe watch
-    #   2) EMA20+QQE consensus from the ~both watch
+    # Same day: rise then crash. QQE flips DOWN, while the final candle is
+    # already below EMA20 (not an EMA20 cross on this bar), so only the
+    # standalone QQE watch should alert.
     peak = [100.0 + 0.5 * i for i in range(80)]
     crash = [peak[-1] - 0.8 * i for i in range(1, 61)]
     run_at(datetime(2026, 9, 28, 18, 5, tzinfo=IST),
            make_candles(peak + crash, start="2026-09-28 12:00", minutes=1))
     crude = [t for _, _, t in sent.messages if "MCX:CRUDEOIL" in t]
     flips = [t for t in crude if t.startswith(("BUY MCX", "SELL MCX"))]
-    assert len(flips) == 2                          # qqe-only + consensus
-    qqe_only = [t for t in flips if "QQE signals" in t and "consensus" not in t]
-    consensus = [t for t in flips if "EMA20+QQE consensus" in t]
-    assert len(qqe_only) == 1
-    assert len(consensus) == 1
-    assert qqe_only[0].startswith("SELL MCX:CRUDEOIL")
-    assert consensus[0].startswith("SELL MCX:CRUDEOIL")
-    assert "EMA20 cross" in consensus[0]            # includes EMA20 detail
-    assert "QQE signals" in consensus[0]            # includes QQE detail
+    assert len(flips) == 1
+    assert "QQE signals" in flips[0]
+    assert flips[0].startswith("SELL MCX:CRUDEOIL")
+    assert not any("QQE + EMA20" in t for t in flips)
     assert not [t for t in crude if "ENV pre-flip" in t
                 or "Magic Envelope" in t]            # env fully off for crude
 
 
-def test_both_consensus_no_alert_when_engines_disagree(rig, monkeypatch):
-    """~both consensus mode: when engines disagree, no alert fires and
-    the consensus side stays unchanged."""
-    from dataclasses import replace
-    from datetime import datetime
-
-    from nse_alerts.config import Watch
-    from nse_alerts.market_hours import IST, parse_time_window
-    from nse_alerts.signals import evaluate
-    from tests.conftest import make_candles, rising, falling
-
-    cfg, provider, sent = rig
-    # Build a ~both watch manually
-    crude = Watch(key="MCX:CRUDEOIL", label="CRUDEOIL", exchange="MCX",
-                  tv_symbol="MCX:CRUDEOIL", yahoo_symbol="BZ=F",
-                  strategy="both",
-                  session=parse_time_window("17:00-22:00"))
-    cfg = replace(cfg, watches=(crude,), strategy="both")
-
-    # First run: rising path -> both engines UP -> consensus baseline UP
-    monkeypatch.setattr(app, "now_ist",
-                        lambda: datetime(2026, 9, 28, 18, 0, tzinfo=IST))
-    provider.df = make_candles(rising(150), start="2026-09-28 09:15",
-                               minutes=1)
-    assert app.run(cfg) == 0
-    states = StateStore(cfg.state_file).load()
-    assert states["MCX:CRUDEOIL#both"].last_side == "UP"
-
-    # Now feed a path where EMA20 flips DOWN but QQE stays UP.
-    # We can't easily force QQE to stay UP while EMA20 goes DOWN with
-    # synthetic data, so instead we verify the consensus key logic:
-    # if both sides are stored as different, no alert fires.
-    # We test this by directly manipulating state to simulate disagreement.
-    raw = StateStore(cfg.state_file)._load_raw()
-    raw["MCX:CRUDEOIL"]["last_side"] = "DOWN"     # ema20 flipped DOWN
-    raw["MCX:CRUDEOIL#qqe"]["last_side"] = "UP"   # qqe still UP
-    raw["MCX:CRUDEOIL#both"]["last_side"] = "UP"   # consensus was UP
-    tmp = cfg.state_file.with_suffix(".tmp")
-    tmp.write_text(__import__("json").dumps(raw, indent=2), encoding="utf-8")
-    __import__("os").replace(tmp, cfg.state_file)
-
-    # Run again with same data -> engines re-evaluate to their stored sides.
-    # The consensus sees disagreement -> no alert, side stays UP.
-    before_count = len([t for _, _, t in sent.messages
-                        if t.startswith(("BUY MCX", "SELL MCX"))])
-    assert app.run(cfg) == 0
-    after_count = len([t for _, _, t in sent.messages
-                       if t.startswith(("BUY MCX", "SELL MCX"))])
-    assert after_count == before_count  # no new alert on disagreement
-    states = StateStore(cfg.state_file).load()
-    assert states["MCX:CRUDEOIL#both"].last_side == "UP"  # consensus unchanged
+def _ema_cross_frame(direction: str, candle: str = "correct"):
+    """Flat history plus a deterministic final EMA20 cross."""
+    closes = [100.0] * 40 + [102.0 if direction == "up" else 98.0]
+    frame = make_candles(closes, start="2026-09-28 09:15")
+    if direction == "up":
+        opens = {"correct": 101.0, "wrong": 103.0, "doji": 102.0}
+    else:
+        opens = {"correct": 99.0, "wrong": 97.0, "doji": 98.0}
+    op = opens[candle]
+    close = closes[-1]
+    frame.iloc[-1, frame.columns.get_loc("Open")] = op
+    frame.iloc[-1, frame.columns.get_loc("High")] = max(op, close)
+    frame.iloc[-1, frame.columns.get_loc("Low")] = min(op, close)
+    return frame
 
 
-def test_consensus_send_failure_does_not_advance_state(rig, monkeypatch):
+def _run_combo(cfg, store, frame, qqe_side, state):
+    watch = cfg.watches[0]
+    return app._consensus_decide(
+        watch, {"qqe": qqe_side}, frame, "fake",
+        frame.index[-1].isoformat(), "2026-09-28", False,
+        store, cfg, state, f"{watch.key}#both", True, now=MONDAY)
+
+
+def test_qqe_ema20_alert_requires_matching_bias_and_candle_color(rig):
+    from nse_alerts.state import SymbolState
+
+    cfg, _, sent = rig
+    store = StateStore(cfg.state_file)
+
+    cases = [
+        ("up", "correct", "UP", "BUY"),
+        ("down", "correct", "DOWN", "SELL"),
+        ("up", "correct", "DOWN", None),
+        ("down", "correct", "UP", None),
+        ("up", "wrong", "UP", None),
+        ("down", "wrong", "DOWN", None),
+        ("up", "doji", "UP", None),
+        ("down", "doji", "DOWN", None),
+    ]
+    for i, (direction, candle, qqe_side, expected) in enumerate(cases):
+        frame = _ema_cross_frame(direction, candle)
+        state = SymbolState(
+            last_side=qqe_side,
+            last_processed_bar=frame.index[-2].isoformat(),
+            last_seen_date="2026-09-28")
+        key = f"NIFTY1!#both-{i}"
+        store.put(key, state)
+        watch = cfg.watches[0]
+        app._consensus_decide(
+            watch, {"qqe": qqe_side}, frame, "fake",
+            frame.index[-1].isoformat(), "2026-09-28", False,
+            store, cfg, state, key, True, now=MONDAY)
+
+        emitted = [text for _, _, text in sent.messages
+                   if text.startswith(("BUY NIFTY1!", "SELL NIFTY1!"))]
+        if expected:
+            assert len(emitted) == 1
+            assert emitted[0].startswith(f"{expected} NIFTY1!")
+            assert "QQE + EMA20" in emitted[0]
+            assert ("green 5m candle" if expected == "BUY"
+                    else "red 5m candle") in emitted[0]
+        else:
+            assert not emitted
+        sent.messages.clear()
+
+
+def test_qqe_ema20_alert_records_and_dedupes_completed_bar(rig):
+    from nse_alerts.state import SymbolState
+
+    cfg, _, sent = rig
+    store = StateStore(cfg.state_file)
+    frame = _ema_cross_frame("up")
+    state = SymbolState(
+        last_side="UP", last_processed_bar=frame.index[-2].isoformat(),
+        last_seen_date="2026-09-28")
+    store.put("NIFTY1!#both", state)
+
+    _run_combo(cfg, store, frame, "UP", state)
+    _run_combo(cfg, store, frame, "UP", store.get("NIFTY1!#both"))
+
+    flips = [text for _, _, text in sent.messages
+             if text.startswith(("BUY NIFTY1!", "SELL NIFTY1!"))]
+    assert len(flips) == 1
+    saved = store.get("NIFTY1!#both")
+    assert saved.last_event_side == "BUY"
+    assert saved.last_processed_bar == frame.index[-1].isoformat()
+
+
+def test_qqe_ema20_can_signal_repeated_same_direction_crosses(rig):
+    from nse_alerts.state import SymbolState
+
+    cfg, _, sent = rig
+    store = StateStore(cfg.state_file)
+    watch = cfg.watches[0]
+    closes = [100.0] * 40 + [102.0, 98.0, 102.0]
+    frame = make_candles(closes, start="2026-09-28 09:15")
+    frame.loc[frame.index[-3], "Open"] = 101.0  # green buy cross
+    frame.loc[frame.index[-2], "Open"] = 99.0   # red pullback; no combo
+    frame.loc[frame.index[-1], "Open"] = 101.0  # another green buy cross
+    state = SymbolState(
+        last_side="UP", last_processed_bar=frame.index[39].isoformat(),
+        last_seen_date="2026-09-28")
+    store.put("NIFTY1!#both", state)
+
+    for length in (41, 42, 43):
+        current = frame.iloc[:length].copy()
+        state = store.get("NIFTY1!#both")
+        app._consensus_decide(
+            watch, {"qqe": "UP"}, current, "fake",
+            current.index[-1].isoformat(), "2026-09-28", False,
+            store, cfg, state, "NIFTY1!#both", True, now=MONDAY)
+
+    buys = [text for _, _, text in sent.messages
+            if text.startswith("BUY NIFTY1!")]
+    assert len(buys) == 2
+
+
+def test_qqe_ema20_send_failure_does_not_advance_state(rig, monkeypatch):
     from nse_alerts.notify import NotifyError
     from nse_alerts.state import SymbolState
 
-    cfg, provider, _ = rig
-    watch = cfg.watches[0]
+    cfg, _, _ = rig
     store = StateStore(cfg.state_file)
-    previous = SymbolState(last_side="UP",
-                           last_processed_bar="2026-09-28T11:15:00",
-                           last_seen_date="2026-09-28")
+    frame = _ema_cross_frame("up")
+    previous = SymbolState(
+        last_side="UP", last_processed_bar=frame.index[-2].isoformat(),
+        last_event_side="SELL", last_seen_date="2026-09-28")
     store.put("NIFTY1!#both", previous)
-    provider.df = make_candles(falling(26))
 
     def fail_send(*args, **kwargs):
         raise NotifyError("temporary Telegram failure")
 
     monkeypatch.setattr(app, "send_telegram", fail_send)
     with pytest.raises(app._RetrySignal):
-        app._consensus_decide(
-            watch, ["ema20", "qqe"],
-            {"ema20": "DOWN", "qqe": "DOWN"},
-            {"ema20": None, "qqe": None}, provider.df, "fake",
-            provider.df.index[-1].isoformat(), "2026-09-28", False,
-            store, {}, cfg, previous, "UP", "NIFTY1!#both", True,
-            now=MONDAY, forming=None)
+        _run_combo(cfg, store, frame, "UP", previous)
 
     persisted = store.get("NIFTY1!#both")
-    assert persisted is not None
     assert persisted.last_side == "UP"
-    assert persisted.last_processed_bar == "2026-09-28T11:15:00"
-    assert persisted.last_event_side == ""
-
-
-def test_consensus_waits_for_first_agreement_instead_of_guessing_up(rig):
-    cfg, provider, sent = rig
-    watch = cfg.watches[0]
-    store = StateStore(cfg.state_file)
-    provider.df = make_candles(falling(26))
-    bar_iso = provider.df.index[-1].isoformat()
-
-    app._consensus_decide(
-        watch, ["ema20", "qqe"], {"ema20": "DOWN", "qqe": "UP"},
-        {"ema20": None, "qqe": None}, provider.df, "fake", bar_iso,
-        "2026-09-28", False, store, {}, cfg, None, None,
-        "NIFTY1!#both", True, now=MONDAY, forming=None)
-    assert store.get("NIFTY1!#both") is None
-
-    app._consensus_decide(
-        watch, ["ema20", "qqe"], {"ema20": "DOWN", "qqe": "DOWN"},
-        {"ema20": None, "qqe": None}, provider.df, "fake", bar_iso,
-        "2026-09-28", False, store, {}, cfg, None, None,
-        "NIFTY1!#both", True, now=MONDAY, forming=None)
-    baseline = store.get("NIFTY1!#both")
-    assert baseline is not None and baseline.last_side == "DOWN"
-    assert not [text for _, _, text in sent.messages
-                if text.startswith(("BUY NIFTY1!", "SELL NIFTY1!"))]
-
-
-def test_both_consensus_alert_when_both_engines_flip_same_direction(rig, monkeypatch):
-    """~both consensus: when both engines flip from UP->DOWN on the same
-    bar, crude produces TWO alerts: one QQE-only (~qqe watch) and one
-    EMA20+QQE consensus (~both watch)."""
-    from dataclasses import replace
-    from datetime import datetime
-
-    from nse_alerts.config import SYMBOLS_DEFAULT, parse_watches
-    from nse_alerts.market_hours import IST
-    from tests.conftest import make_candles, rising
-
-    cfg, provider, sent = rig
-    cfg = replace(cfg, watches=parse_watches(SYMBOLS_DEFAULT))
-
-    # Baseline: rising -> both UP
-    monkeypatch.setattr(app, "now_ist",
-                        lambda: datetime(2026, 9, 28, 18, 0, tzinfo=IST))
-    provider.df = make_candles(rising(150), start="2026-09-28 09:15",
-                               minutes=1)
-    assert app.run(cfg) == 0
-
-    # Crash: both flip DOWN -> qqe-only alert + consensus SELL
-    peak = [100.0 + 0.5 * i for i in range(80)]
-    crash = [peak[-1] - 0.8 * i for i in range(1, 61)]
-    monkeypatch.setattr(app, "now_ist",
-                        lambda: datetime(2026, 9, 28, 18, 5, tzinfo=IST))
-    provider.df = make_candles(peak + crash, start="2026-09-28 12:00",
-                               minutes=1)
-    assert app.run(cfg) == 0
-
-    crude_alerts = [t for _, _, t in sent.messages
-                    if "MCX:CRUDEOIL" in t
-                    and t.startswith(("BUY MCX", "SELL MCX"))]
-    assert len(crude_alerts) == 2                   # qqe-only + consensus
-    qqe_only = [t for t in crude_alerts if "QQE signals" in t and "consensus" not in t]
-    consensus = [t for t in crude_alerts if "EMA20+QQE consensus" in t]
-    assert len(qqe_only) == 1
-    assert len(consensus) == 1
-    assert qqe_only[0].startswith("SELL MCX:CRUDEOIL")
-    assert consensus[0].startswith("SELL MCX:CRUDEOIL")
-    assert "EMA20+QQE consensus" in consensus[0]
-
-    # Verify state: consensus key recorded the event
-    states = StateStore(cfg.state_file).load()
-    both_state = states["MCX:CRUDEOIL#both"]
-    assert both_state.last_side == "DOWN"
-    assert both_state.last_event_side == "SELL"
+    assert persisted.last_processed_bar == frame.index[-2].isoformat()
+    assert persisted.last_event_side == "SELL"
 
 
 def test_qqe_mode_ignores_ema_data_length_requirements(rig):

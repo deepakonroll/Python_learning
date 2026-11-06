@@ -79,9 +79,9 @@ TV_SYMBOL_OVERRIDES: dict[str, str] = {
 
 SYMBOLS_DEFAULT = "NIFTY1!~qqe,NIFTY1!~both,MCX:CRUDEOIL~qqe@17:00-22:00,MCX:CRUDEOIL~both@17:00-22:00"
 # NIFTY1!~qqe   -> QQE-only buy/sell on NIFTY (full NSE session)
-# NIFTY1!~both  -> QQE+EMA20 consensus on NIFTY (state key: NIFTY1!#both)
+# NIFTY1!~both  -> QQE bias + colored EMA20 cross on NIFTY (state key: NIFTY1!#both)
 # MCX:CRUDEOIL~qqe@17:00-22:00   -> QQE-only buy/sell on crude (state key: MCX:CRUDEOIL#qqe)
-# MCX:CRUDEOIL~both@17:00-22:00 -> QQE+EMA20 consensus on crude (state key: MCX:CRUDEOIL#both)
+# MCX:CRUDEOIL~both@17:00-22:00 -> QQE bias + colored EMA20 cross on crude (state key: MCX:CRUDEOIL#both)
 # Crude gated 17:00-22:00 IST (+5 min close grace); NG off.
 
 

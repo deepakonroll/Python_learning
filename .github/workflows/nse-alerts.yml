@@ -3,9 +3,9 @@
 # Simple syntax only (minute lists + one */5 hour range), Mon-Fri:
 #   09:02-09:27, 09:32-23:27, 23:32-23:37 IST every 5 min = ~176 runs/day
 # (free minutes: make the repo PUBLIC for unlimited Actions minutes)
-# Runs land ~2 min into each FORMING 5m bar (not on the :00/:05 boundaries),
-# so the forming-bar "flip PENDING" heads-up (PREP_ALERTS) fires BEFORE the
-# confirmed full-bar alert - you hear about a cross while the bar is forming.
+# Runs land ~2 min into each FORMING 5m bar (not on the :00/:05 boundaries).
+# PREP_ALERTS is off by default; set the repo variable to true to opt in to
+# forming-bar heads-up messages for the standalone strategies.
 name: nse-alerts
 
 on:

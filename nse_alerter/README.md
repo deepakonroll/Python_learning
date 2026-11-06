@@ -1,8 +1,8 @@
 # Futures 5m Alerter — NIFTY (NSE) + Crude / Natural Gas (MCX) → Telegram
 
 **Instruments (`SYMBOLS=`, comma list — default: `NIFTY1!~both` +
-`MCX:CRUDEOIL~both@17:00-22:00`; both run **EMA20+QQE consensus** alerts
-(alerts fire only when both engines agree on direction)
+`MCX:CRUDEOIL~both@17:00-22:00`; both run **QQE + EMA20** alerts
+(the current QQE direction must agree with a colored EMA20 cross)
 with the env flip/prep **OFF** since 2026-10-17, gated 17:00–22:05 IST.
 NG off — add `MCX:NATURALGAS` back any time to re-enable it):**
 
@@ -29,10 +29,11 @@ though prices differ (USD vs INR). Exact MCX contracts come later via Kite (§6)
 | `env` | **Magic Envelope** port: SMA20 ± `ENVELOPE_PERCENT` band (0.2%); a *full bar* beyond the band flips the side (carry-forward). Backtest on a month of 5m bars: **crude 5.3 flips/day (3–7, no dead days)**, NIFTY 0.5/day —
   tune per symbol. Attach per-watch with `SYMBOLS … ~env` or run globally via `/strategy env`. **Prep heads-up**: while an env watch is live, the *forming* bar beyond the band can send a one-off `⚠️ ENV pre-flip · … flip PENDING`; it is disabled by default (`PREP_ALERTS=true` opts in). |
 | `ema20` | The original rule: 5m close flips below→above EMA20 → `BUY`, above→below → `SELL`. |
-| `both` | **Consensus mode**: both engines (EMA20 + QQE) run on every bar, but an alert fires **only when both agree on the same direction AND the consensus direction changes** (flip). No alert on first run (baseline), no alert while the agreed direction stays the same, and no alert when engines disagree. Individual engine sides are tracked under `key` (EMA20) and `key#qqe` for warm-up continuity and `/status` diagnosis; the consensus direction is stored under `key#both`. One daily heartbeat. **Both NIFTY and Crude now default to `~both`** — high-conviction alerts only. **Backtest (last 20 trading days, 5m bars)**: NIFTY — 8 signals (0.4/day), 75% same-day accuracy; CRUDE (BZ=F, 17:00–22:00 IST) — 42 signals (2.1/day), 55% same-day accuracy. Run `python tools/consensus_backtest.py` (NIFTY) or `python tools/consensus_backtest_crude.py` (CRUDE). |
+| `both` | **QQE + EMA20**: BUY only when QQE is currently LONG and a completed green 5m candle closes across EMA20 from below; SELL only when QQE is SHORT and a completed red candle closes across EMA20 from above. The standalone `~qqe` watch continues to alert on its own QQE flips. Combo state is stored separately under `key#both`; no alert on first run. |
 
-Alerts are flip-based only (silent while the side stays the same), delivered to
-**Telegram** (push on your phone), deduplicated via local state. Cloud toggle:
+Standalone QQE alerts fire on QQE direction flips. The combo alerts on each
+qualifying EMA20 cross while QQE agrees; each completed bar is sent at most
+once. Alerts go to **Telegram** and use local state for deduplication. Cloud toggle:
 repo **Settings → Secrets and variables → Actions → Variables** → add
 `STRATEGY` = `qqe` / `ema20` / `both` (defaults to `qqe` when unset).
 
@@ -164,8 +165,9 @@ python main.py --verbose                 # debug logging
   live half-bar whipsaws), so the earliest a cross can be announced is the
   bar's close. The GitHub schedule runs **+2 min offset** from the bar
   boundaries, so each tick lands inside a *forming* bar: `PREP_ALERTS=true`
-  opts into a **`⚠️ … flip PENDING`** heads-up for **ema20 / qqe / both** (not just
-  env) only after price clears a small buffer (defaults: EMA 0.02%, QQE 1 RSI
+  opts into a **`⚠️ … flip PENDING`** heads-up for standalone **ema20 / qqe**
+  watches (not the `both` combo) only after price clears a small buffer
+  (defaults: EMA 0.02%, QQE 1 RSI
   point). Set `PREP_EMA_BUFFER_PCT` or `PREP_QQE_BUFFER` in local `.env` or as
   GitHub Actions variables to tune them. A forming candle can send at most one
   pre-flip, even if its live value flickers across the threshold; the completed
