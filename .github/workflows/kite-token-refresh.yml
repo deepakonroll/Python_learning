@@ -1,0 +1,48 @@
+name: Refresh Kite token
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_token:
+        description: Paste only request_token from the Kite redirect URL
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kite-token-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    # The dispatch input is a one-time credential. Keep this workflow owner-only.
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mask request token
+        env:
+          KITE_REQUEST_TOKEN: ${{ inputs.request_token }}
+        shell: bash
+        run: |
+          if [[ ! "$KITE_REQUEST_TOKEN" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            echo "::error::The request token format is invalid. Paste only the request_token value."
+            exit 1
+          fi
+          printf '::add-mask::%s\n' "$KITE_REQUEST_TOKEN"
+
+      - name: Exchange token and update repository secret
+        env:
+          KITE_REQUEST_TOKEN: ${{ inputs.request_token }}
+          KITE_API_KEY: ${{ secrets.KITE_API_KEY }}
+          KITE_API_SECRET: ${{ secrets.KITE_API_SECRET }}
+          GITHUB_SECRET_UPDATE_TOKEN: ${{ secrets.KITE_SECRET_UPDATE_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python -m pip install --disable-pip-version-check --quiet -r nse_alerter/requirements-kite-refresh.txt
+          python nse_alerter/refresh_kite_github_secret.py
+

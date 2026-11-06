@@ -286,6 +286,7 @@ You're on the **paid Kite Connect plan** (₹500 / 30 days) with an app at
    Register-ScheduledTask -TaskName "Kite-Daily-Login" -Action $action `
        -Trigger (New-ScheduledTaskTrigger -Daily -At 08:55) -Force
    ```
+
 3. What kite gives the bot: the **real front-month futures** for every watch —
    NIFTY on NFO, crude on MCX (the exact INR contract, no proxy delay),
    SENSEX on BFO — picked automatically from the instrument master
@@ -309,6 +310,31 @@ default NIFTY + crude list). If the balance drains faster than the ₹500/30-day
 plan renews, drop back to `DATA_PROVIDER=auto` — the bot never depends on
 kite succeeding.
 
+### Refresh from GitHub Mobile when away from the PC
+
+The owner-only workflow `.github/workflows/kite-token-refresh.yml` exchanges a
+Kite `request_token` and updates the repository's `KITE_ACCESS_TOKEN` secret.
+Before using it, add these two repository Actions secrets:
+
+- `KITE_API_SECRET` — the API secret from Kite Developer Console → My Apps.
+- `KITE_SECRET_UPDATE_TOKEN` — a fine-grained GitHub token scoped only to this
+  repository, with **Secrets: write** permission. This lets the workflow
+  replace `KITE_ACCESS_TOKEN`; do not use a broad classic token.
+
+Then each trading morning on your phone:
+
+1. Open the Kite login URL and complete login and TOTP. The redirect to
+   `localhost:3000` may show a connection error on the phone; copy the value
+   after `request_token=` in the address bar, up to the next `&`.
+2. In GitHub Mobile, open this repository → **Actions** → **Refresh Kite
+   token** → **Run workflow**. Paste only the `request_token` value.
+3. Check that the workflow succeeds. It exchanges the one-time request token
+   and updates `KITE_ACCESS_TOKEN`; neither token is printed in the logs.
+
+The request token is a temporary credential: do not share it in chat or email.
+The access token expires around 6 AM IST the next day, so repeat on each
+trading morning while away.
+
 ## 7. Cloud deployment (GitHub Actions) — runs while your PC is OFF
 
 Implemented in **`.github/workflows/nse-alerts.yml`** (repo root): the same
@@ -328,8 +354,10 @@ else the default `NIFTY1!,MCX:CRUDEOIL,MCX:NATURALGAS`.
 2. **New repository secret** → Name `TELEGRAM_BOT_TOKEN`, Value = the token from `.env` → Save
 3. **New repository secret** → Name `TELEGRAM_CHAT_ID`, Value = `674729729` → Save
 4. **New repository secret** → Name `KITE_API_KEY`, Value from your Kite developer app → Save
-5. **New repository secret** → Name `KITE_ACCESS_TOKEN`, Value from this morning's Kite login → Save. Update this secret each trading morning after generating a fresh token; it expires around 06:00 IST the next day.
-6. First test: **Actions → nse-alerts → Run workflow** (manual button) → green check ✓
+5. **New repository secret** → Name `KITE_API_SECRET`, Value from your Kite developer app → Save
+6. **New repository secret** → Name `KITE_ACCESS_TOKEN`, Value from a fresh Kite login → Save
+7. **New repository secret** → Name `KITE_SECRET_UPDATE_TOKEN`, Value = a fine-grained PAT limited to this repository with **Secrets: write** permission → Save. The token lets the refresh workflow replace `KITE_ACCESS_TOKEN`; grant it no code or workflow permissions.
+8. First test: **Actions → nse-alerts → Run workflow** (manual button) → green check ✓
    (it prints `test`/`baseline`/`no cross` lines in the run log)
 7. From then on the cron does everything — **you can keep the PC off.**
 
