@@ -18,7 +18,7 @@ concurrency:
 jobs:
   refresh:
     # The dispatch input is a one-time credential. Keep this workflow owner-only.
-    if: github.actor == github.repository_owner
+    if: ${{ github.actor == github.repository_owner && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
