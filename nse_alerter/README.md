@@ -254,9 +254,9 @@ Remove either task with `Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alert
 |---|---|---|
 | **tv** (default for NSE + crude) | `NSE:NIFTY1!` — actual **NIFTY futures**, continuous front-month (auto-rolls at expiry), real-time for retail users; `NYMEX:BZ1!` continuous **Brent futures** for crude (the same `BZ1!` chart on TradingView) | first choice in `DATA_PROVIDER=auto` for NSE watches **and** for crude (built-in TV override) |
 | **yahoo** (fallback for NSE & crude; **primary for other MCX**) | `^NSEI` spot proxy for NIFTY; `BZ=F` Brent + `NG=F` Henry Hub for crude/natgas | TradingView's unofficial API **rejects MCX symbols for anonymous sessions** (verified), so plain MCX watches go yahoo-first — but crude has a TV override (`NYMEX:BZ1!`, real-time) because `BZ=F` measured **+10 min stale** (2026-10-06: bar 20:55 at 21:09), making TV the lead and BZ=F the fallback. Alerts show `src=` of whichever fired |
-| **kite** (paid) | your Zerodha account's real front-month futures — **exact MCX INR contracts too** (instrument master cached 6 h; a `-FUT` filter picks the NIFTY/crude/SENSEX front month automatically) | leads when `DATA_PROVIDER=kite`; Yahoo is the only fallback, so an expired token never silently switches to TradingView |
+| **kite** (paid) | your Zerodha account's real front-month futures — **exact MCX INR contracts too** (instrument master cached 6 h; a `-FUT` filter picks the NIFTY/crude/SENSEX front month automatically) | leads when `DATA_PROVIDER=kite`; if Kite fails, NIFTY and crude try TradingView futures before Yahoo. Other symbols go to Yahoo |
 
-## 6. Zerodha Kite (paid feed — Yahoo fallback)
+## 6. Zerodha Kite (paid feed — TradingView/Yahoo fallback)
 
 You're on the **paid Kite Connect plan** (₹500 / 30 days) with an app at
 `developers.kite.trade` → *My Apps* (`redirect_url = http://localhost:3000`).
@@ -295,10 +295,12 @@ You're on the **paid Kite Connect plan** (₹500 / 30 days) with an app at
    ~6k-row cap ≈ 3 weeks and yahoo's 60 days), at the same one historical
    call per watch per cron tick.
 
-**Fallback behavior:** `DATA_PROVIDER=kite` tries Kite first and Yahoo second.
-If Kite's token is stale or Kite is unavailable, fetch logs identify the
-fallback and alerts use the configured Yahoo proxy (for example `^NSEI` for
-NIFTY and `BZ=F` for crude), not the exact Zerodha contract.
+**Fallback behavior:** `DATA_PROVIDER=kite` tries Kite first. If Kite fails,
+NIFTY and crude try TradingView futures (`NSE:NIFTY1!` and `NYMEX:BZ1!`), then
+the Yahoo proxy (`^NSEI` and `BZ=F`). Note that TradingView's anonymous feed
+does not provide the MCX INR crude contract: `NYMEX:BZ1!` is continuous Brent
+futures, used as the crude-market proxy. Other watches fall back from Kite to
+Yahoo. Logs identify provider failures and alerts include the source in `src=`.
 
 **Credit caveat:** the plan's "500 credits" metering isn't documented
 precisely (check *My Apps* for your balance), and the bot spends ~1 historical
@@ -347,9 +349,10 @@ Unregister-ScheduledTask -TaskName "NSE-EMA-Cross-Alerter" -Confirm:$false
 - GitHub **e-mails you if the workflow fails**, and pauses scheduled runs after
   **60 days with zero repo activity** (any push/reactivate fixes it).
 - Check usage anytime: `github.com/deepakonroll/Python_learning/actions`
-- Both Actions workflows use `DATA_PROVIDER=kite`: Kite is tried first, with
-  Yahoo as the only fallback. The Kite access-token secret must be refreshed
-  each trading morning; when it expires, the alert source changes to Yahoo.
+- Both Actions workflows use `DATA_PROVIDER=kite`: Kite is tried first. If it
+  fails, NIFTY and crude try TradingView futures before Yahoo; other watches
+  use Yahoo as fallback. The Kite access-token secret must be refreshed each
+  trading morning.
 - Same pattern works for **AWS Lambda + EventBridge** (zip the package, env vars
   in configuration, `state.json` in S3) if you ever outgrow Actions.
 

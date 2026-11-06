@@ -1082,8 +1082,8 @@ def test_crude_auto_chain_leads_with_fresh_tv_override(rig):
         == ["tv", "yahoo"]
 
 
-def test_kite_provider_leads_with_yahoo_fallback(rig):
-    """DATA_PROVIDER=kite: paid feed first, Yahoo proxy is the only fallback."""
+def test_kite_provider_leads_with_tv_futures_then_yahoo_fallback(rig):
+    """Kite leads; NIFTY/crude try TV futures before Yahoo proxies."""
     from dataclasses import replace
 
     from nse_alerts.config import parse_watches
@@ -1094,9 +1094,9 @@ def test_kite_provider_leads_with_yahoo_fallback(rig):
     crude = parse_watches("MCX:CRUDEOIL~env@17:00-22:00")[0]
     ng = parse_watches("MCX:NATURALGAS")[0]
     assert [p.name for p in real_build_providers(cfg, cfg.watches[0])] \
-        == ["kite", "yahoo"]
+        == ["kite", "tv", "yahoo"]
     assert [p.name for p in real_build_providers(cfg, crude)] \
-        == ["kite", "yahoo"]
+        == ["kite", "tv", "yahoo"]
     assert [p.name for p in real_build_providers(cfg, ng)] \
         == ["kite", "yahoo"]
 
