@@ -46,12 +46,38 @@ class CrossEvent:
     source: str          # provider that produced the candles
     strategy: str = "ema20"
     rule: str = ""       # human-readable condition line
+    ema20: float | None = None  # EMA20 context shown on standalone QQE alerts
 
     def message(self, now: datetime | None = None,
                 interval_minutes: int = 5,
                 prep_confirmed: bool = False) -> str:
         arrow = "UP->DOWN" if self.side == "SELL" else "DOWN->UP"
         label = STRATEGY_LABELS.get(self.strategy, self.strategy)
+        heading = (f"{'SELL' if self.side == 'SELL' else 'BUY'} {self.symbol} "
+                   f"({arrow}) · {label}"
+                   f"{' · pre-flip confirmed' if prep_confirmed else ''}")
+
+        if self.strategy == "qqe":
+            if self.ema20 is None:
+                ema_context = "EMA20 position unavailable"
+            elif self.close > self.ema20:
+                ema_context = "Price above EMA20"
+            elif self.close < self.ema20:
+                ema_context = "Price below EMA20"
+            else:
+                ema_context = "Price at EMA20"
+
+            footer = f"bar {self.bar_time:%d %b %H:%M} IST · src={self.source}"
+            if now is not None:
+                naive = now.replace(tzinfo=None) if now.tzinfo else now
+                close_t = self.bar_time + timedelta(minutes=interval_minutes)
+                lag = max(0, int((naive - close_t).total_seconds()
+                                 // (interval_minutes * 60)))
+                status = "just closed" if lag == 0 else f"{lag} bar(s) late"
+                footer += (f" · closed {close_t:%H:%M} · {status}"
+                           f" · sent {naive:%H:%M}")
+            return f"{heading}\n{ema_context}\n{footer}"
+
         rule = self.rule or (
             f"5m close {self.close:,.2f} "
             f"{'>' if self.side == 'BUY' else '<'} EMA20 {self.ema:,.2f}")
@@ -64,10 +90,8 @@ class CrossEvent:
             footer += (f"\n⏱️ bar closed {close_t:%H:%M} · "
                        f"{'just closed' if lag == 0 else f'{lag} bar(s) late'}"
                        f" · sent {naive:%H:%M}")
-        confirmed = " · pre-flip confirmed" if prep_confirmed else ""
         return (
-            f"{'SELL' if self.side == 'SELL' else 'BUY'} {self.symbol} "
-            f"({arrow}) · {label}{confirmed}\n"
+            f"{heading}\n"
             f"{rule}\n"
             f"{footer}"
         )
@@ -244,6 +268,8 @@ def evaluate(
     # side flipped relative to stored state -> alert
     close = float(closes.iloc[-1])
     bar_time = candles.index[-1].to_pydatetime()
+    ema20_context = (float(ema(closes, ema_len).iloc[-1])
+                     if strategy == "qqe" else None)
     if strategy == "qqe":
         rule = (f"QQE flipped {'LONG' if cur == 'UP' else 'SHORT'} · "
                 f"close {close:,.2f} · trailing {level:.1f} vs "
@@ -268,5 +294,6 @@ def evaluate(
         source=source,
         strategy=strategy,
         rule=rule,
+        ema20=ema20_context,
     )
     return event, cur
