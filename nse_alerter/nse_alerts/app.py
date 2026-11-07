@@ -693,7 +693,7 @@ def _world_update(cfg: Config, now: datetime) -> bool:
     text = world.build_message(
         rows,
         gift=world.fetch_gift(),
-        fiidii=world.fetch_fii_dii(),
+        fiidii=world.fetch_fii_dii(as_of=now, holidays=cfg.holidays),
     )
     if not text:
         log.warning("world update: no Yahoo rows (%d) - skipping send", len(rows))

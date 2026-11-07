@@ -11,8 +11,8 @@ Sources:
   FTSE ^FTSE, CAC ^FCHI, DAX ^GDAXI, Nikkei ^N225, Hang Seng ^HSI.
 - TradingView (tvdatafeed, existing provider): GIFT Nifty NSEIX:NIFTY1!
   (NSE IFSC - the overnight Nifty cue; falls back to NSE:GIFTNIFTY spelling).
-- FII/DII: chirag127/fii-dii-activity-api static JSON on raw.githubusercontent
-  (GitHub warehouse keeps latest.json - prior-session equity cash flows, ₹ cr).
+- FII/DII: NSE's public FII/DII endpoint, with a static GitHub JSON fallback;
+  both are accepted only when dated to the previous NSE session (₹ cr).
 
 Java equivalent: a QuoteService (3 feeds behind one facade) + a template.
 """
@@ -20,13 +20,14 @@ Java equivalent: a QuoteService (3 feeds behind one facade) + a template.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import requests
 
 from .providers.base import normalize_candles
 from .providers.tv import TvProvider
 from .providers.yahoo import YahooProvider
+from .market_hours import is_trading_day, now_ist
 
 log = logging.getLogger("nse_alerts")
 
@@ -41,11 +42,19 @@ GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
 # GIFT Nifty: TradingView symbol (NSE IFSC), then the NSE-spelling fallback.
 _GIFT_TRIES = [("NSEIX", "NIFTY1!"), ("NSE", "GIFTNIFTY")]
 
-# chirag127/fii-dii-activity-api - static JSON, updated ~18:30 IST each session
+# NSE's public FII/DII endpoint is primary. Keep the static GitHub JSON as a
+# fallback, but accept either source only when it matches the prior session.
+NSE_FII_DII_URL = "https://www.nseindia.com/api/fiidiiTradeReact"
 FII_DII_URL = ("https://raw.githubusercontent.com/chirag127/fii-dii-activity-api/"
                "main/data/latest.json")
 _TIMEOUT = 12.0
 _USER_AGENT = "nse-alerter/1.0"
+_NSE_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 Chrome/130 Safari/537.36"),
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://www.nseindia.com/reports/fii-dii",
+}
 
 
 # ---------------------------------------------------------------- formatter
@@ -159,22 +168,86 @@ def fetch_gift() -> tuple[float, float] | None:
     return None
 
 
-def fetch_fii_dii() -> dict | None:
-    """Prior-session FII/DII equity cash flows (₹ cr): date/fii/dii. None when
-    the static JSON is unreachable or malformed."""
-    try:
-        resp = requests.get(FII_DII_URL, timeout=_TIMEOUT,
-                            headers={"User-Agent": _USER_AGENT})
-        resp.raise_for_status()
-        data = resp.json()
-        equity = data.get("equity") or {}
+def _previous_nse_session(as_of: date,
+                           holidays: frozenset[date]) -> date:
+    candidate = as_of - timedelta(days=1)
+    while not is_trading_day(candidate, holidays):
+        candidate -= timedelta(days=1)
+    return candidate
 
-        fii, dii = equity.get("fii_net"), equity.get("dii_net")
-        date = data.get("date")
-        if fii is None or dii is None or not date:
-            log.warning("world: FII/DII payload missing net fields: %s", data)
+
+def _parse_fii_dii(data) -> dict | None:
+    """Normalize NSE's list response or the fallback provider's JSON object."""
+    if isinstance(data, list):
+        flows: dict[str, tuple[str, float]] = {}
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            category = str(row.get("category", "")).strip().upper()
+            key = ("dii" if category == "DII" else
+                   "fii" if category in {"FII", "FII/FPI", "FPI"} else None)
+            if key:
+                raw_date, net = row.get("date"), row.get("netValue")
+                if raw_date and net is not None:
+                    flows[key] = (str(raw_date), float(net))
+        if "fii" not in flows or "dii" not in flows:
             return None
-        return {"date": str(date)[:10], "fii": float(fii), "dii": float(dii)}
-    except Exception as exc:
-        log.warning("world: FII/DII unavailable: %s", exc)
+        fii_date, fii = flows["fii"]
+        dii_date, dii = flows["dii"]
+        if fii_date != dii_date:
+            return None
+        try:
+            parsed_date = datetime.strptime(fii_date, "%d-%b-%Y").date()
+        except ValueError:
+            return None
+        return {"date": parsed_date.isoformat(), "fii": fii, "dii": dii}
+
+    if not isinstance(data, dict):
         return None
+    equity = data.get("equity") or {}
+    fii, dii, raw_date = (equity.get("fii_net"), equity.get("dii_net"),
+                          data.get("date"))
+    if fii is None or dii is None or not raw_date:
+        return None
+    try:
+        return {"date": str(raw_date)[:10], "fii": float(fii),
+                "dii": float(dii)}
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch_fii_dii(as_of: datetime | date | None = None,
+                  holidays: frozenset[date] = frozenset()) -> dict | None:
+    """Get prior-session equity cash flows (₹ cr), rejecting stale payloads.
+
+    NSE is primary; a static JSON mirror is fallback. In the production
+    morning snapshot, ``as_of`` and the configured holidays are passed so a
+    source is used only when its date equals the previous NSE trading session.
+    """
+    as_of_date = (as_of.date() if isinstance(as_of, datetime) else as_of)
+    expected = _previous_nse_session(as_of_date or now_ist().date(), holidays)
+
+    sources = (
+        ("nse", NSE_FII_DII_URL, _NSE_HEADERS),
+        ("mirror", FII_DII_URL, {"User-Agent": _USER_AGENT,
+                                  "Cache-Control": "no-cache"}),
+    )
+    for name, url, headers in sources:
+        try:
+            resp = requests.get(url, timeout=_TIMEOUT, headers=headers)
+            resp.raise_for_status()
+            result = _parse_fii_dii(resp.json())
+        except Exception as exc:
+            log.warning("world: FII/DII %s source unavailable: %s", name, exc)
+            continue
+        if result is None:
+            log.warning("world: FII/DII %s payload missing valid net fields",
+                        name)
+            continue
+        if result["date"] != expected.isoformat():
+            log.warning("world: FII/DII %s data is stale (%s; expected %s) - "
+                        "omitting", name, result["date"], expected.isoformat())
+            continue
+        log.info("world: FII/DII source=%s date=%s", name, result["date"])
+        return result
+    return None

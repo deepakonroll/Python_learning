@@ -114,8 +114,9 @@ def test_fetch_fii_dii_parses_equity_net_flows(monkeypatch):
                                    "equity": {"fii_net": -5285.87,
                                               "dii_net": 3319.39},
                                    "derivative": {}}))
-    assert world.fetch_fii_dii() == {"date": "2026-10-15",
-                                     "fii": -5285.87, "dii": 3319.39}
+    assert world.fetch_fii_dii(
+        as_of=datetime(2026, 10, 16, 9, 5, tzinfo=IST)) == {
+            "date": "2026-10-15", "fii": -5285.87, "dii": 3319.39}
 
 
 def test_fetch_fii_dii_returns_none_on_error_or_bad_shape(monkeypatch):
@@ -154,7 +155,8 @@ def rig(monkeypatch, tmp_path):
                         lambda cfg, watch=None: [_FakeProvider()])
     monkeypatch.setattr(world, "fetch_yahoo_rows", up_rows)
     monkeypatch.setattr(world, "fetch_gift", lambda: GIFT_UP)
-    monkeypatch.setattr(world, "fetch_fii_dii", lambda: dict(FII_DII))
+    monkeypatch.setattr(world, "fetch_fii_dii",
+                        lambda **_kwargs: dict(FII_DII))
     cfg = make_config(tmp_path)
     return cfg, sent
 

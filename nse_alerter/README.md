@@ -131,8 +131,10 @@ python main.py --verbose                 # debug logging
   overnight snapshot once per day (`world_date`) — 🇺🇸 Nasdaq/Dow-futures,
   🇪🇺 FTSE/CAC/DAX, 🌏 Nikkei/Hang-Seng (Yahoo, % vs prev close, 🟢/🔴 by
   sign), 🎯 GIFT Nifty (TradingView `NSEIX:NIFTY1!`), 💼 prior-session
-  FII/DII cash flows (chirag127 static-JSON GitHub API; gitignore-clean, no
-  keys). Every block is best-effort — a dead feed omits its row, never the
+  FII/DII cash flows (NSE endpoint first, static JSON fallback). FII/DII is
+  shown only when the returned date matches the previous NSE trading session
+  using `HOLIDAYS`; stale data is omitted and logged, never presented as
+  current. Every block is best-effort — a dead feed omits its row, never the
   message (see `nse_alerts/world.py`). The 08:45–08:55 external-cron
   dispatches fall in the pre-open quiet window and stay silent.
 - **09:20 opening levels (v1)**: the 09:17–09:25 run sends the day's opening
