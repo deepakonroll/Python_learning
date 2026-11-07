@@ -57,16 +57,7 @@ class CrossEvent:
                    f"({arrow}) · {label}"
                    f"{' · pre-flip confirmed' if prep_confirmed else ''}")
 
-        if self.strategy == "qqe":
-            if self.ema20 is None:
-                ema_context = "EMA20 position unavailable"
-            elif self.close > self.ema20:
-                ema_context = "Price above EMA20"
-            elif self.close < self.ema20:
-                ema_context = "Price below EMA20"
-            else:
-                ema_context = "Price at EMA20"
-
+        if self.strategy in {"qqe", "both"}:
             footer = f"bar {self.bar_time:%d %b %H:%M} IST · src={self.source}"
             if now is not None:
                 naive = now.replace(tzinfo=None) if now.tzinfo else now
@@ -76,7 +67,17 @@ class CrossEvent:
                 status = "just closed" if lag == 0 else f"{lag} bar(s) late"
                 footer += (f" · closed {close_t:%H:%M} · {status}"
                            f" · sent {naive:%H:%M}")
-            return f"{heading}\n{ema_context}\n{footer}"
+            if self.strategy == "qqe":
+                if self.ema20 is None:
+                    ema_context = "EMA20 position unavailable"
+                elif self.close > self.ema20:
+                    ema_context = "Price above EMA20"
+                elif self.close < self.ema20:
+                    ema_context = "Price below EMA20"
+                else:
+                    ema_context = "Price at EMA20"
+                return f"{heading}\n{ema_context}\n{footer}"
+            return f"{heading}\n{footer}"
 
         rule = self.rule or (
             f"5m close {self.close:,.2f} "

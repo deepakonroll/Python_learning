@@ -810,10 +810,15 @@ def _heartbeat(cfg: Config, side: str, bar_iso: str, source: str,
     a silent feed is impossible to miss. Failures never affect alerts."""
     if not (cfg.telegram_token and cfg.telegram_chat_id):
         return
-    text = (f"🔎 monitoring live · {now_ist():%d %b %Y}\n"
-            f"{symbol or cfg.symbol} side={side} · "
-            f"rule={strategy_label or cfg.strategy} · "
-            f"last bar {bar_iso} · src={source}")
+    try:
+        last_bar = datetime.fromisoformat(bar_iso).strftime("%H:%M")
+    except (TypeError, ValueError):
+        last_bar = bar_iso
+    strategy = STRATEGY_LABELS.get(strategy_label or cfg.strategy,
+                                  strategy_label or cfg.strategy)
+    text = (f"📡 Monitoring live · {now_ist():%d %b %Y}\n"
+            f"{symbol or cfg.symbol} · side={side} · {strategy} · "
+            f"last {last_bar} · {source}")
     try:
         send_telegram(cfg.telegram_token, cfg.telegram_chat_id, text)
     except NotifyError as exc:

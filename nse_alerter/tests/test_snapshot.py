@@ -34,9 +34,8 @@ def _straddle(instrument, spot, iv, weekday):
     ce = bs_price(spot, strike, t, iv, "CE")
     pe = bs_price(spot, strike, t, iv, "PE")
     credit = ce + pe
-    return (f"🧶 {instrument} ATM STRADDLE · strike {strike:,}",
-            f"• CE ₹{ce:,.0f} · PE ₹{pe:,.0f} · total ₹{credit:,.0f} "
-            f"(~{credit / spot * 100:.1f}% of spot)")
+    return (f"🧶 {instrument} ATM · {strike:,} · ~{credit / spot * 100:.1f}%",
+            f"CE ₹{ce:,.0f} · PE ₹{pe:,.0f} · total ₹{credit:,.0f}")
 
 
 # ------------------------------------------------------------- formatter
@@ -65,7 +64,7 @@ def test_message_red_day_and_nifty_strike_grid():
     msg = snapshot.build_message(levels, MONDAY)
     assert msg is not None
     assert "🔴 -257 (-1.10%)" in msg
-    assert "SENSEX ATM STRADDLE · strike 75,800" in msg   # round to nearest 100
+    assert "SENSEX ATM · 75,800" in msg   # round to nearest 100
 
 
 def test_message_omits_missing_vix_gift_blocks():
@@ -91,7 +90,7 @@ def test_message_sensex_only_when_nifty_feed_dead():
     msg = snapshot.build_message(levels, MONDAY)
     assert msg is not None
     assert "NIFTY" not in msg
-    assert "SENSEX ATM STRADDLE" in msg
+    assert "SENSEX ATM" in msg
 
 
 def test_message_none_when_no_indian_index_at_all():
@@ -150,7 +149,7 @@ def test_levels_sends_once_then_dedupes(rig, monkeypatch):
     assert app.run(cfg) == 0
     assert len(sent.messages) == 1
     text = sent.messages[0][2]
-    assert "📊 OPENING LEVELS" in text and "NIFTY ATM STRADDLE" in text
+    assert "📊 OPENING LEVELS" in text and "NIFTY ATM" in text
     app.run(cfg)                                  # same-day rerun: gate already
     assert len(sent.messages) == 1                # consumed (levels_date dedupe)
 

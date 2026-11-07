@@ -70,9 +70,8 @@ def _straddle_line(instrument: str, spot: float, iv: float,
     ce = bs_price(spot, strike, t, iv, "CE")
     pe = bs_price(spot, strike, t, iv, "PE")
     credit = ce + pe
-    return [f"🧶 {instrument} ATM STRADDLE · strike {strike:,}",
-            f"• CE ₹{ce:,.0f} · PE ₹{pe:,.0f} · total ₹{credit:,.0f} "
-            f"(~{credit / spot * 100:.1f}% of spot)"]
+    return [f"🧶 {instrument} ATM · {strike:,} · ~{credit / spot * 100:.1f}%",
+            f"CE ₹{ce:,.0f} · PE ₹{pe:,.0f} · total ₹{credit:,.0f}"]
 
 
 def build_message(levels: dict, now) -> str | None:
