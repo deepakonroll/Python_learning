@@ -1,12 +1,10 @@
 {
 	"folders": [
 		{
-			"path": "chap01_to_15",
-			"name": "Python for Java Developers"
+			"path": "chap01_to_15"
 		},
 		{
-			"path": "nse_alerter",
-			"name": "NSE Alerter"
+			"path": "nse_alerter"
 		}
 	],
 	"settings": {}
