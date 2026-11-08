@@ -15,9 +15,8 @@ venv/
 .vscode/
 .idea/
 
-# Personal VS Code workspace files (revisit: commit if it becomes
-# a meaningful multi-root workspace with shared settings)
-*.code-workspace
+# Local VS Code workspaces
+.vscode/*.code-workspace
 
 # OS
 Thumbs.db

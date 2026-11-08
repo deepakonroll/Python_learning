@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "chap01_to_15",
+			"name": "Python for Java Developers"
+		},
+		{
+			"path": "nse_alerter",
+			"name": "NSE Alerter"
+		}
+	],
+	"settings": {}
+}
