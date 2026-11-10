@@ -45,6 +45,7 @@ _GIFT_TRIES = [("NSEIX", "NIFTY1!"), ("NSE", "GIFTNIFTY")]
 # NSE's public FII/DII endpoint is primary. Keep the static GitHub JSON as a
 # fallback, but accept either source only when it matches the prior session.
 NSE_FII_DII_URL = "https://www.nseindia.com/api/fiidiiTradeReact"
+NSE_HOME_URL = "https://www.nseindia.com/"
 FII_DII_URL = ("https://raw.githubusercontent.com/chirag127/fii-dii-activity-api/"
                "main/data/latest.json")
 _TIMEOUT = 12.0
@@ -103,7 +104,8 @@ def build_message(rows: dict[str, tuple[float, float]],
     """
     if not rows:
         return None
-    out = ["⛅ Good Morning Deepak · 📊 World Markets Update",
+    out = ["Good Morning Deepak",
+           "📊 World Markets Update",
            "────────────────────────────────"]
     for header, items in GROUPS:
         present = [(label, rows[sym]) for label, sym in items if sym in rows]
@@ -216,6 +218,19 @@ def _parse_fii_dii(data) -> dict | None:
         return None
 
 
+def _fetch_nse_fii_dii():
+    """Fetch NSE's report with a session so its homepage cookies are retained."""
+    with requests.Session() as session:
+        try:
+            session.get(NSE_HOME_URL, headers=_NSE_HEADERS, timeout=_TIMEOUT)
+        except requests.RequestException as exc:
+            log.warning("world: NSE FII/DII cookie warm-up failed: %s", exc)
+        response = session.get(NSE_FII_DII_URL, headers=_NSE_HEADERS,
+                               timeout=_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+
+
 def fetch_fii_dii(as_of: datetime | date | None = None,
                   holidays: frozenset[date] = frozenset()) -> dict | None:
     """Get prior-session equity cash flows (₹ cr), rejecting stale payloads.
@@ -227,16 +242,19 @@ def fetch_fii_dii(as_of: datetime | date | None = None,
     as_of_date = (as_of.date() if isinstance(as_of, datetime) else as_of)
     expected = _previous_nse_session(as_of_date or now_ist().date(), holidays)
 
-    sources = (
-        ("nse", NSE_FII_DII_URL, _NSE_HEADERS),
-        ("mirror", FII_DII_URL, {"User-Agent": _USER_AGENT,
-                                  "Cache-Control": "no-cache"}),
-    )
-    for name, url, headers in sources:
+    sources = ("nse", "mirror")
+    for name in sources:
         try:
-            resp = requests.get(url, timeout=_TIMEOUT, headers=headers)
-            resp.raise_for_status()
-            result = _parse_fii_dii(resp.json())
+            if name == "nse":
+                data = _fetch_nse_fii_dii()
+            else:
+                resp = requests.get(
+                    FII_DII_URL, timeout=_TIMEOUT,
+                    headers={"User-Agent": _USER_AGENT,
+                             "Cache-Control": "no-cache"})
+                resp.raise_for_status()
+                data = resp.json()
+            result = _parse_fii_dii(data)
         except Exception as exc:
             log.warning("world: FII/DII %s source unavailable: %s", name, exc)
             continue

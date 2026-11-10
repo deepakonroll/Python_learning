@@ -128,10 +128,11 @@ python main.py --verbose                 # debug logging
   session` — instant proof-of-life. Scheduled runs, external-cron dispatches
   and post-close runs stay quiet (no nightly notes).
 - **09:05 world-markets update (v1)**: the 09:02–09:10 run sends the day's
-  overnight snapshot once per day (`world_date`) — 🇺🇸 Nasdaq/Dow-futures,
+  overnight snapshot once per day (`world_date`), headed by “Good Morning
+  Deepak” and “📊 World Markets Update” on separate lines — 🇺🇸 Nasdaq/Dow-futures,
   🇪🇺 FTSE/CAC/DAX, 🌏 Nikkei/Hang-Seng (Yahoo, % vs prev close, 🟢/🔴 by
   sign), 🎯 GIFT Nifty (TradingView `NSEIX:NIFTY1!`), 💼 prior-session
-  FII/DII cash flows (NSE endpoint first, static JSON fallback). FII/DII is
+  FII/DII cash flows (NSE endpoint first, using a cookie-backed session, static JSON fallback). FII/DII is
   shown only when the returned date matches the previous NSE trading session
   using `HOLIDAYS`; stale data is omitted and logged, never presented as
   current. Every block is best-effort — a dead feed omits its row, never the
@@ -433,4 +434,3 @@ Findings feed decisions, not code: rotation/tuning changes land in
 *Educational tool — signals are informational, not trade advice; you are
 responsible for any trading decisions (and SEBI/RBI regulations apply to you,
 not this script).*
-

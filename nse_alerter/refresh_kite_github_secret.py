@@ -67,7 +67,10 @@ def main() -> int:
 
     access_token = (payload.get("data") or {}).get("access_token")
     if response.status_code != 200 or payload.get("status") != "success" or not access_token:
-        print("::error::Kite rejected the request token. Log in again and retry.")
+        message = payload.get("message") if isinstance(payload, dict) else None
+        detail = f": {message}" if message else ""
+        print(f"::error::Kite rejected the request token (HTTP "
+              f"{response.status_code}){detail}")
         return 1
     _mask(access_token)
 

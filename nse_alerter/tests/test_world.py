@@ -39,7 +39,8 @@ FII_DII = {"date": "2026-10-15", "fii": -5285.87, "dii": 3319.39}
 def test_message_full_green_day_matches_sample():
     msg = world.build_message(up_rows(), gift=GIFT_UP, fiidii=FII_DII)
     assert msg is not None
-    assert "Good Morning Deepak" in msg
+    lines = msg.splitlines()
+    assert lines[:2] == ["Good Morning Deepak", "📊 World Markets Update"]
     assert f"• {'Nasdaq':<10} 🟢 +0.08%" in msg
     assert f"• {'Dow Fut':<10} 🟢 +0.04%" in msg
     assert f"• {'FTSE 100':<10} 🟢 +1.07%" in msg
@@ -109,11 +110,10 @@ class _FakeResp:
 
 def test_fetch_fii_dii_parses_equity_net_flows(monkeypatch):
     monkeypatch.setattr(
-        world.requests, "get",
-        lambda *a, **k: _FakeResp({"date": "2026-10-15", "source": "groww",
-                                   "equity": {"fii_net": -5285.87,
-                                              "dii_net": 3319.39},
-                                   "derivative": {}}))
+        world, "_fetch_nse_fii_dii",
+        lambda: {"date": "2026-10-15", "source": "groww",
+                 "equity": {"fii_net": -5285.87, "dii_net": 3319.39},
+                 "derivative": {}})
     assert world.fetch_fii_dii(
         as_of=datetime(2026, 10, 16, 9, 5, tzinfo=IST)) == {
             "date": "2026-10-15", "fii": -5285.87, "dii": 3319.39}
@@ -122,12 +122,35 @@ def test_fetch_fii_dii_parses_equity_net_flows(monkeypatch):
 def test_fetch_fii_dii_returns_none_on_error_or_bad_shape(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("net down")
+    monkeypatch.setattr(world, "_fetch_nse_fii_dii", boom)
     monkeypatch.setattr(world.requests, "get", boom)
     assert world.fetch_fii_dii() is None
 
+    monkeypatch.setattr(world, "_fetch_nse_fii_dii", lambda: {"equity": {}})
     monkeypatch.setattr(world.requests, "get",
                         lambda *a, **k: _FakeResp({"equity": {}}))
     assert world.fetch_fii_dii() is None
+
+
+def test_nse_fetch_primes_session_then_requests_fii_dii(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.urls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def get(self, url, **_kwargs):
+            self.urls.append(url)
+            return _FakeResp({"nse": "payload"})
+
+    session = FakeSession()
+    monkeypatch.setattr(world.requests, "Session", lambda: session)
+    assert world._fetch_nse_fii_dii() == {"nse": "payload"}
+    assert session.urls == [world.NSE_HOME_URL, world.NSE_FII_DII_URL]
 # ------------------------------------------------------------- runner
 
 class _Recorder:
